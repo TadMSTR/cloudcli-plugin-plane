@@ -54,6 +54,31 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   let wsInstance: WebSocket | null = null;
   let unsubCtx: (() => void) | null = null;
 
+  // ── Tab state persistence (localStorage) ──────────────────────────
+  const STORAGE_KEY = 'pp-saved';
+
+  function saveTabState(): void {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        selectedProjectId: state.selectedProjectId,
+        filters: state.filters,
+      }));
+    } catch { /* storage unavailable */ }
+  }
+
+  function restoreTabState(): void {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { selectedProjectId?: string | null; filters?: AppFilters };
+      // Validate saved project still exists before restoring
+      if (saved.selectedProjectId && state.projects.some(p => p.id === saved.selectedProjectId)) {
+        state.selectedProjectId = saved.selectedProjectId;
+      }
+      if (saved.filters) state.filters = { ...state.filters, ...saved.filters };
+    } catch { /* ignore parse errors */ }
+  }
+
   const root = document.createElement('div');
   Object.assign(root.style, {
     height: '100%',
@@ -81,8 +106,11 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         const countsRes = await api.rpc('GET', 'issue-counts') as { counts: Record<string, number> };
         state.issueCounts = countsRes.counts ?? {};
       } catch { /* counts unavailable — carry on without badges */ }
-      // Default: all-projects view, newest first
-      state.selectedProjectId = null;
+      // Restore last-used project and filters from localStorage
+      restoreTabState();
+      if (state.selectedProjectId) {
+        await loadProjectMeta(state.selectedProjectId);
+      }
       await loadIssues();
     } catch (err) {
       state.error = (err as Error).message;
@@ -189,12 +217,14 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     } catch (err) {
       state.error = (err as Error).message;
     }
+    saveTabState();
     state.loading = false;
     render(api.context);
   }
 
   async function applyFilter(key: keyof AppFilters, value: string): Promise<void> {
     state.filters[key] = value;
+    saveTabState();
     state.loading = true;
     render(api.context);
     try {
@@ -298,10 +328,11 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       ? state.projects.find(p => p.id === state.selectedProjectId)
       : null;
 
-    const allOpen = Object.values(state.issueCounts).reduce((s, n) => s + n, 0);
-    const allLabel = `all projects${allOpen > 0 ? ` (${allOpen})` : ''}`;
     const projectOptions = [
-      `<option value="" ${!state.selectedProjectId ? 'selected' : ''}>${allLabel}</option>`,
+      // Placeholder shown only when no project selected (first visit, before localStorage kicks in)
+      !state.selectedProjectId
+        ? `<option value="" disabled selected>— select a project —</option>`
+        : '',
       ...state.projects.map(p => {
         const cnt = state.issueCounts[p.id] ?? 0;
         const badge = cnt > 0 ? ` (${cnt})` : '';
@@ -403,8 +434,9 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
           return `<select class="pp-state-sel" data-id="${issue.id}" style="${stateSelectStyle}" onclick="event.stopPropagation()">${stateOpts}</select>`;
         })();
 
+    const rowInteractive = !isAllProjects;
     return `<div class="pp-up" style="animation-delay:${idx * 0.03}s">
-      <div class="pp-issue-row" data-id="${issue.id}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'">
+      <div class="pp-issue-row" data-id="${issue.id}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:${rowInteractive ? 'pointer' : 'default'}" ${rowInteractive ? `onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'"` : ''}>
         <span style="font-size:0.65rem;color:${pColor};flex-shrink:0;width:20px;text-align:center">${pIcon}</span>
         <div style="width:6px;height:6px;border-radius:50%;background:${dot};flex-shrink:0"></div>
         <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0;min-width:60px">${escHtml(identifier)}</span>
@@ -635,9 +667,10 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       });
     }
 
-    // Issue row clicks
+    // Issue row clicks (only active when a project is selected)
     root.querySelectorAll<HTMLElement>('.pp-issue-row').forEach(row => {
       row.addEventListener('click', () => {
+        if (!state.selectedProjectId) return;
         const id = row.dataset['id'];
         if (id) void openDetail(id);
       });
