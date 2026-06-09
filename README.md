@@ -20,15 +20,24 @@ flowchart LR
 
 | Feature | Description |
 |---------|-------------|
+| My Issues | Default landing view — assigned issues grouped by state (started > unstarted > backlog) |
 | Multi-project | Switch between all projects in your workspace |
 | Issue list | Paginated list with state dot, priority icon, identifier, title, due date |
 | Filtering | Filter by state group, priority, assignee, label, or cycle |
+| Quick-filter presets | One-click filters: My open, High priority, Overdue |
 | Search | Client-side search across issue title and sequence ID |
+| Sort controls | Sort by newest, priority, updated, or due date |
 | State transitions | Inline state dropdown on each row — updates optimistically |
 | Issue detail | Full description, state/priority controls, labels, assignees, due date, comments |
-| Inline create | Create issues with title, description, priority, label, assignee |
+| Comments | Add comments from the detail view |
+| Sub-issues | Parent link, child count indicator, navigable sub-issue list in detail |
+| Inline create | Create issues with title, description, priority, label, assignee (default assignee pre-selected) |
 | Cycle view | Filter to current cycle issues via the cycle dropdown |
+| Issue count badges | State group counts shown as clickable badges to filter |
 | Overdue flagging | Due dates past today shown in error color for non-completed issues |
+| Keyboard navigation | `j`/`k` to move, `Enter` to open, `c` to create, `/` to search, `Esc` to clear/back, `s`/`p` for state/priority in detail |
+| Responsive layout | Adapts to narrow widths (<480px) via ResizeObserver |
+| Open in Plane | Direct link from detail view to the issue in Plane |
 | Dark/light theme | Follows CloudCLI host theme, switches without reload |
 | Live updates | WebSocket connection pushes refresh events after mutations |
 
