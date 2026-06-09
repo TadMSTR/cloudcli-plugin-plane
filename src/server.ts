@@ -406,16 +406,25 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
-  if (req.url === '/upgrade') {
-    wss.handleUpgrade(req, socket, head, ws => {
-      wsClients.add(ws);
-      ws.send(JSON.stringify({ type: 'connected' }));
-      ws.on('close', () => wsClients.delete(ws));
-      ws.on('error', () => wsClients.delete(ws));
-    });
-  } else {
+  const origin = req.headers.origin ?? '';
+  const allowed = [
+    process.env['CLOUDCLI_ORIGIN'] ?? '',
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+  ].filter(Boolean);
+
+  if (origin && !allowed.includes(origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
+    return;
   }
+
+  wss.handleUpgrade(req, socket, head, ws => {
+    wsClients.add(ws);
+    ws.send(JSON.stringify({ type: 'connected' }));
+    ws.on('close', () => wsClients.delete(ws));
+    ws.on('error', () => wsClients.delete(ws));
+  });
 });
 
 const PORT = parseInt(process.env.PORT ?? '0', 10);

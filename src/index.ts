@@ -123,11 +123,25 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     state.comments = res.comments ?? [];
   }
 
+  let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let wsClosed = false;
+
   function connectWs(): void {
+    if (wsClosed) return;
     try {
-      wsInstance = new WebSocket(`ws://localhost/upgrade`);
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const token = localStorage.getItem('auth-token');
+      const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+      const url = `${proto}//${location.host}/plugin-ws/cloudcli-plugin-plane${qs}`;
+      wsInstance = new WebSocket(url);
       wsInstance.onopen  = () => { state.wsConnected = true;  render(api.context); };
-      wsInstance.onclose = () => { state.wsConnected = false; render(api.context); };
+      wsInstance.onclose = () => {
+        state.wsConnected = false;
+        render(api.context);
+        if (!wsClosed && !wsReconnectTimer) {
+          wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWs(); }, 5000);
+        }
+      };
       wsInstance.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data as string) as { type: string };
@@ -643,6 +657,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
   // ── Unmount cleanup (stored on container for CloudCLI to call) ────
   (container as HTMLElement & { __ppCleanup?: () => void }).__ppCleanup = () => {
+    wsClosed = true;
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
     unsubCtx?.();
     wsInstance?.close();
     wsInstance = null;
