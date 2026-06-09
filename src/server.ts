@@ -158,6 +158,7 @@ async function handleStates(res: http.ServerResponse, params: URLSearchParams): 
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
   const project = params.get('project');
   if (!project) { json(res, 400, { error: 'project required' }); return; }
+  if (!VALID_UUID.test(project)) { json(res, 400, { error: 'invalid id' }); return; }
 
   const cacheKey = `states:${project}`;
   let states = cache.get<PlaneState[]>(cacheKey);
@@ -174,6 +175,7 @@ async function handleMembers(res: http.ServerResponse, params: URLSearchParams):
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
   const project = params.get('project');
   if (!project) { json(res, 400, { error: 'project required' }); return; }
+  if (!VALID_UUID.test(project)) { json(res, 400, { error: 'invalid id' }); return; }
 
   const cacheKey = `members:${project}`;
   let members = cache.get<PlaneMember[]>(cacheKey);
@@ -190,6 +192,7 @@ async function handleLabels(res: http.ServerResponse, params: URLSearchParams): 
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
   const project = params.get('project');
   if (!project) { json(res, 400, { error: 'project required' }); return; }
+  if (!VALID_UUID.test(project)) { json(res, 400, { error: 'invalid id' }); return; }
 
   const cacheKey = `labels:${project}`;
   let labels = cache.get<PlaneLabel[]>(cacheKey);
@@ -206,6 +209,7 @@ async function handleCycles(res: http.ServerResponse, params: URLSearchParams): 
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
   const project = params.get('project');
   if (!project) { json(res, 400, { error: 'project required' }); return; }
+  if (!VALID_UUID.test(project)) { json(res, 400, { error: 'invalid id' }); return; }
 
   const cacheKey = `cycles:${project}`;
   let cycles = cache.get<PlaneCycle[]>(cacheKey);
@@ -222,6 +226,7 @@ async function handleIssueList(res: http.ServerResponse, params: URLSearchParams
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
   const project = params.get('project');
   if (!project) { json(res, 400, { error: 'project required' }); return; }
+  if (!VALID_UUID.test(project)) { json(res, 400, { error: 'invalid id' }); return; }
 
   const filters = {
     state_group: params.get('state_group') ?? undefined,
@@ -307,6 +312,7 @@ async function handleIssueCreate(
 // ── Router ─────────────────────────────────────────────────────────────
 
 const ISSUE_DETAIL_RE = /^\/issues\/([^/?]+)$/;
+const VALID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function router(
   req: http.IncomingMessage,
@@ -347,6 +353,9 @@ async function router(
         const issueId = m[1];
         const projectId = params.get('project');
         if (!projectId) { json(res, 400, { error: 'project required' }); return; }
+        if (!VALID_UUID.test(issueId) || !VALID_UUID.test(projectId)) {
+          json(res, 400, { error: 'invalid id' }); return;
+        }
         if (method === 'GET') {
           await handleIssueDetail(res, projectId, issueId);
         } else if (method === 'PATCH') {

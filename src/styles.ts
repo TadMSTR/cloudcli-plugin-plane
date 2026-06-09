@@ -89,6 +89,15 @@ export function stateColor(group: string, c: ThemeColors): string {
   }
 }
 
+export function escHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function skeletonRow(c: ThemeColors, width: number, delay: number): string {
   return `<div style="height:10px;width:${width}%;background:${c.muted};border-radius:2px;margin-bottom:8px;opacity:0.3;animation:pp-pulse 1.6s ease infinite;animation-delay:${delay}s"></div>`;
 }

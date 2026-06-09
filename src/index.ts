@@ -23,6 +23,7 @@ import {
   priorityColor,
   stateColor,
   skeletonRow,
+  escHtml,
 } from './styles.js';
 
 // ── Mount / Unmount ────────────────────────────────────────────────────
@@ -262,7 +263,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const project = state.projects.find(p => p.id === state.selectedProjectId);
 
     const projectOptions = state.projects.map(p =>
-      `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${p.identifier} — ${p.name}</option>`
+      `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${escHtml(p.identifier)} — ${escHtml(p.name)}</option>`
     ).join('');
 
     const selectStyle = `background:${c.surface};color:${c.text};border:1px solid ${c.border};border-radius:4px;padding:4px 8px;font-family:${MONO};font-size:0.72rem;outline:none;cursor:pointer`;
@@ -271,7 +272,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
     return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
       <div style="font-size:1.3rem;font-weight:700;letter-spacing:-0.02em;flex-shrink:0">
-        ${project ? `${project.identifier}<span style="color:${c.accent}">▌</span>` : `Plane<span style="color:${c.accent}">▌</span>`}
+        ${project ? `${escHtml(project.identifier)}<span style="color:${c.accent}">▌</span>` : `Plane<span style="color:${c.accent}">▌</span>`}
       </div>
       <select id="pp-project-sel" style="${selectStyle}">${projectOptions}</select>
       <input id="pp-search" type="text" placeholder="search..." value="${state.search.replace(/"/g, '&quot;')}" style="${inputStyle}">
@@ -297,19 +298,19 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const assigneeOpts = [
       `<option value="" ${!state.filters.assignee ? 'selected' : ''}>all assignees</option>`,
       ...state.members.map(m =>
-        `<option value="${m.id}" ${state.filters.assignee === m.id ? 'selected' : ''}>${m.display_name}</option>`
+        `<option value="${m.id}" ${state.filters.assignee === m.id ? 'selected' : ''}>${escHtml(m.display_name)}</option>`
       ),
     ].join('');
     const labelOpts = [
       `<option value="" ${!state.filters.label ? 'selected' : ''}>all labels</option>`,
       ...state.labels.map(l =>
-        `<option value="${l.id}" ${state.filters.label === l.id ? 'selected' : ''}>${l.name}</option>`
+        `<option value="${l.id}" ${state.filters.label === l.id ? 'selected' : ''}>${escHtml(l.name)}</option>`
       ),
     ].join('');
     const cycleOpts = [
       `<option value="" ${!state.filters.cycle ? 'selected' : ''}>all cycles</option>`,
       ...state.cycles.map(cy =>
-        `<option value="${cy.id}" ${state.filters.cycle === cy.id ? 'selected' : ''}>${cy.name}</option>`
+        `<option value="${cy.id}" ${state.filters.cycle === cy.id ? 'selected' : ''}>${escHtml(cy.name)}</option>`
       ),
     ].join('');
 
@@ -337,7 +338,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
     // State dropdown (inline)
     const stateOpts = state.states.map(s =>
-      `<option value="${s.id}" ${s.id === issue.state ? 'selected' : ''}>${s.name}</option>`
+      `<option value="${s.id}" ${s.id === issue.state ? 'selected' : ''}>${escHtml(s.name)}</option>`
     ).join('');
     const stateSelectStyle = `background:${c.surface};color:${c.muted};border:1px solid ${c.border};border-radius:3px;padding:2px 5px;font-family:${MONO};font-size:0.55rem;outline:none;cursor:pointer;max-width:100px`;
 
@@ -345,8 +346,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       <div class="pp-issue-row" data-id="${issue.id}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'">
         <span style="font-size:0.65rem;color:${pColor};flex-shrink:0;width:20px;text-align:center">${pIcon}</span>
         <div style="width:6px;height:6px;border-radius:50%;background:${dot};flex-shrink:0"></div>
-        <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0;min-width:60px">${identifier}</span>
-        <span style="flex:1;font-size:0.72rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${issue.name}</span>
+        <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0;min-width:60px">${escHtml(identifier)}</span>
+        <span style="flex:1;font-size:0.72rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(issue.name)}</span>
         ${dateStr}
         <span style="font-size:0.55rem;color:${c.muted};flex-shrink:0">${ago(issue.updated_at)}</span>
         <select class="pp-state-sel" data-id="${issue.id}" style="${stateSelectStyle}" onclick="event.stopPropagation()">${stateOpts}</select>
@@ -375,13 +376,13 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const pColor = priorityColor(issue.priority, c);
 
     const labelBadges = (issue.label_details ?? []).map(l =>
-      `<span style="font-size:0.5rem;padding:1px 5px;border-radius:2px;background:${l.color}20;color:${l.color};text-transform:uppercase;letter-spacing:0.08em">${l.name}</span>`
+      `<span style="font-size:0.5rem;padding:1px 5px;border-radius:2px;background:${l.color}20;color:${l.color};text-transform:uppercase;letter-spacing:0.08em">${escHtml(l.name)}</span>`
     ).join(' ');
 
-    const assigneeNames = (issue.assignees ?? []).map(id => memberName(id)).join(', ') || '—';
+    const assigneeNames = escHtml((issue.assignees ?? []).map(id => memberName(id)).join(', ') || '—');
 
     const stateOpts = state.states.map(s =>
-      `<option value="${s.id}" ${s.id === issue.state ? 'selected' : ''}>${s.name}</option>`
+      `<option value="${s.id}" ${s.id === issue.state ? 'selected' : ''}>${escHtml(s.name)}</option>`
     ).join('');
     const prioOpts = ['urgent', 'high', 'medium', 'low', 'none'].map(p =>
       `<option value="${p}" ${p === issue.priority ? 'selected' : ''}>${p}</option>`
@@ -392,15 +393,15 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const commentList = state.comments.map(comment => `
       <div style="padding:8px 0;border-bottom:1px solid ${c.border}">
         <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px">
-          <span style="font-size:0.62rem;color:${c.accent}">${comment.actor_detail.display_name}</span>
+          <span style="font-size:0.62rem;color:${c.accent}">${escHtml(comment.actor_detail.display_name)}</span>
           <span style="font-size:0.55rem;color:${c.muted}">${ago(comment.created_at)}</span>
         </div>
-        <div style="font-size:0.7rem;color:${c.text};line-height:1.6">${comment.comment_stripped}</div>
+        <div style="font-size:0.7rem;color:${c.text};line-height:1.6">${escHtml(comment.comment_stripped)}</div>
       </div>`).join('');
 
     return `<div class="pp-up">
-      <div style="font-size:0.6rem;color:${c.muted};margin-bottom:8px">${identifier}</div>
-      <div style="font-size:1.1rem;font-weight:700;color:${c.text};margin-bottom:16px;line-height:1.4">${issue.name}</div>
+      <div style="font-size:0.6rem;color:${c.muted};margin-bottom:8px">${escHtml(identifier)}</div>
+      <div style="font-size:1.1rem;font-weight:700;color:${c.text};margin-bottom:16px;line-height:1.4">${escHtml(issue.name)}</div>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
         <div style="display:flex;flex-direction:column;gap:4px">
@@ -423,7 +424,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
       ${labelBadges ? `<div style="margin-bottom:16px;display:flex;gap:6px;flex-wrap:wrap">${labelBadges}</div>` : ''}
 
-      ${issue.description_stripped ? `<div style="background:${c.surface};border:1px solid ${c.border};border-radius:3px;padding:12px;margin-bottom:16px;font-size:0.72rem;color:${c.text};line-height:1.7;white-space:pre-wrap">${issue.description_stripped}</div>` : ''}
+      ${issue.description_stripped ? `<div style="background:${c.surface};border:1px solid ${c.border};border-radius:3px;padding:12px;margin-bottom:16px;font-size:0.72rem;color:${c.text};line-height:1.7;white-space:pre-wrap">${escHtml(issue.description_stripped)}</div>` : ''}
 
       ${state.comments.length > 0 ? `
         <div style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px">comments (${state.comments.length})</div>
@@ -442,11 +443,11 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     ).join('');
     const labelOpts = [
       `<option value="">— none —</option>`,
-      ...state.labels.map(l => `<option value="${l.id}">${l.name}</option>`),
+      ...state.labels.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`),
     ].join('');
     const assigneeOpts = [
       `<option value="">— none —</option>`,
-      ...state.members.map(m => `<option value="${m.id}">${m.display_name}</option>`),
+      ...state.members.map(m => `<option value="${m.id}">${escHtml(m.display_name)}</option>`),
     ].join('');
 
     return `<div class="pp-up" style="max-width:600px">
