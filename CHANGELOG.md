@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.2.0] — 2026-06-09
+
+### Added
+- "My Issues" default landing view — shows assigned issues grouped by state (started > unstarted > backlog)
+- `/me` server endpoint resolves API key to user identity (cached)
+- My issues / all issues toggle in header
+- Default assignee pre-selected on issue creation
+- Responsive layout for narrow widths (<480px) via ResizeObserver
+- Keyboard navigation: j/k to move, Enter to open, c to create, / to search, Esc to clear/back, s/p to focus state/priority in detail
+- Shortcut help overlay (? button)
+- Add comment from detail view with Enter-to-submit
+- Sort controls: newest, priority, updated, due date
+- Issue count badges by state group (clickable to filter)
+- Quick-filter presets: My open, High priority, Overdue
+- "Open in Plane" link in detail view
+- Sub-issue awareness: parent link, child count indicator, navigable sub-issue list in detail
+
+### Fixed
+- Description textarea value now sent on issue creation
+- Stale error state cleared on every action
+- Priority change in detail view now invalidates list cache
+- "New issue" button hidden when no project selected
+- Double-quote typo in issue row HTML attribute
+
+### Security
+- `comment_html` type validated server-side (typeof guard rejects non-string values)
+- WebSocket origin validation on upgrade (allowlist check)
+- Comment and description text escaped before HTML wrapping
+
 ## [0.1.0] — 2026-06-09
 
 ### Added
