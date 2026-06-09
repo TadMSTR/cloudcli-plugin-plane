@@ -239,21 +239,49 @@ async function handleCycles(res: http.ServerResponse, params: URLSearchParams): 
   json(res, 200, { cycles });
 }
 
+/**
+ * Fetch all issues across all projects in parallel, sorted newest first.
+ * Results are cached under a single key so handleWorkspaceIssues and
+ * handleIssueCounts share the same fetch — 34 parallel requests happen once,
+ * then subsequent calls within TTL_ISSUES are instant.
+ */
+async function fetchAllWorkspaceIssues(cfg: ReturnType<typeof loadConfig> & {}): Promise<PlaneIssue[]> {
+  const cacheKey = `workspace-issues-all:${cfg.workspaceSlug}`;
+  const cached = cache.get<PlaneIssue[]>(cacheKey);
+  if (cached) return cached;
+
+  const client = new PlaneClient(cfg);
+  const projects = await client.listProjects();
+  const perProject = await Promise.all(
+    projects.map(async (p) => {
+      try {
+        const issues = await client.listIssues(p.id, {});
+        // Stamp project UUID onto each issue (per-project endpoint omits it)
+        return issues.map(i => ({ ...i, project: p.id }));
+      } catch {
+        return [] as PlaneIssue[];
+      }
+    })
+  );
+  const issues = perProject.flat().sort((a, b) =>
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+  cache.set(cacheKey, issues, TTL_ISSUES);
+  return issues;
+}
+
 async function handleWorkspaceIssues(res: http.ServerResponse, params: URLSearchParams): Promise<void> {
   const cfg = loadConfig();
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
 
-  const filters = {
-    state_group: params.get('state_group') ?? undefined,
-    priority:    params.get('priority')    ?? undefined,
-  };
-  const cacheKey = `workspace-issues:${JSON.stringify(filters)}`;
-  let issues = cache.get<PlaneIssue[]>(cacheKey);
-  if (!issues) {
-    const client = new PlaneClient(cfg);
-    issues = await client.listWorkspaceIssues(filters);
-    cache.set(cacheKey, issues, TTL_ISSUES);
-  }
+  const stateGroup = params.get('state_group') ?? '';
+  const priority   = params.get('priority')    ?? '';
+
+  let issues = await fetchAllWorkspaceIssues(cfg);
+  // Apply filters client-side — data already cached, no extra Plane calls
+  if (stateGroup) issues = issues.filter(i => (i.state_detail?.group ?? '') === stateGroup);
+  if (priority)   issues = issues.filter(i => i.priority === priority);
+
   json(res, 200, { issues, total: issues.length });
 }
 
@@ -264,13 +292,12 @@ async function handleIssueCounts(res: http.ServerResponse): Promise<void> {
   const cacheKey = `issue-counts:${cfg.workspaceSlug}`;
   let counts = cache.get<Record<string, number>>(cacheKey);
   if (!counts) {
-    const client = new PlaneClient(cfg);
-    const issues = await client.listWorkspaceIssues({});
+    const issues = await fetchAllWorkspaceIssues(cfg);
     counts = {};
     for (const issue of issues) {
       if (!issue.project) continue;
-      const group = issue.state_detail?.group;
-      if (group === 'completed' || group === 'cancelled') continue;
+      const g = issue.state_detail?.group;
+      if (g === 'completed' || g === 'cancelled') continue;
       counts[issue.project] = (counts[issue.project] ?? 0) + 1;
     }
     cache.set(cacheKey, counts, TTL_PROJECTS);

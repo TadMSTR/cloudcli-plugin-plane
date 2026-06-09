@@ -173,23 +173,6 @@ export class PlaneClient {
     );
   }
 
-  // ── Workspace-level issues ────────────────────────────────────────────
-
-  async listWorkspaceIssues(filters: {
-    state_group?: string;
-    priority?: string;
-    order_by?: string;
-  } = {}): Promise<PlaneIssue[]> {
-    const params = new URLSearchParams();
-    if (filters.state_group) params.set('state__group', filters.state_group);
-    if (filters.priority)    params.set('priority', filters.priority);
-    params.set('order_by', filters.order_by ?? '-created_at');
-    const data = await this.get<{ results?: PlaneIssue[] } | PlaneIssue[]>(
-      `${this.ws()}/issues/?${params.toString()}`
-    );
-    return Array.isArray(data) ? data : (data.results ?? []);
-  }
-
   // ── Cycles ────────────────────────────────────────────────────────────
 
   async listCycleIssues(projectId: string, cycleId: string): Promise<PlaneIssue[]> {
