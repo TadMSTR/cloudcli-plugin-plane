@@ -375,9 +375,11 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const sg = issue.state_detail?.group ?? 'unstarted';
     const pColor = priorityColor(issue.priority, c);
 
-    const labelBadges = (issue.label_details ?? []).map(l =>
-      `<span style="font-size:0.5rem;padding:1px 5px;border-radius:2px;background:${l.color}20;color:${l.color};text-transform:uppercase;letter-spacing:0.08em">${escHtml(l.name)}</span>`
-    ).join(' ');
+    const VALID_COLOR = /^#[0-9a-f]{3,8}$/i;
+    const labelBadges = (issue.label_details ?? []).map(l => {
+      const color = VALID_COLOR.test(l.color) ? l.color : '#888888';
+      return `<span style="font-size:0.5rem;padding:1px 5px;border-radius:2px;background:${color}20;color:${color};text-transform:uppercase;letter-spacing:0.08em">${escHtml(l.name)}</span>`;
+    }).join(' ');
 
     const assigneeNames = escHtml((issue.assignees ?? []).map(id => memberName(id)).join(', ') || '—');
 
@@ -511,7 +513,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     if (state.loading) {
       content = `${buildHeader(c, dark)}<div style="margin-top:16px">${buildSkeletons(c)}</div>`;
     } else if (state.error) {
-      content = `${buildHeader(c, dark)}<div style="color:${c.error};font-size:0.72rem;padding:12px 0">${state.error}</div>`;
+      content = `${buildHeader(c, dark)}<div style="color:${c.error};font-size:0.72rem;padding:12px 0">${escHtml(state.error)}</div>`;
     } else if (state.view === 'create') {
       content = `${buildHeader(c, dark)}${buildCreateForm(c)}`;
     } else if (state.view === 'detail') {

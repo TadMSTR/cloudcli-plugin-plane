@@ -74,6 +74,12 @@ The config file is read on every request — no restart needed after changes.
 
 If the file is missing or incomplete, the plugin shows a setup prompt with the expected format.
 
+After creating the file, restrict its permissions — it contains your API key:
+
+```bash
+chmod 600 ~/.claude-code-ui/plugins/cloudcli-plugin-plane/config.json
+```
+
 ---
 
 ## Development

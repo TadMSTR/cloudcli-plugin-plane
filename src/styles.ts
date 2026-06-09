@@ -33,14 +33,6 @@ export function themeColors(dark: boolean): ThemeColors {
 export function ensureAssets(): void {
   if (document.getElementById('pp-styles')) return;
 
-  if (!document.getElementById('pp-font')) {
-    const link = document.createElement('link');
-    link.id = 'pp-font';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap';
-    document.head.appendChild(link);
-  }
-
   const s = document.createElement('style');
   s.id = 'pp-styles';
   s.textContent = `

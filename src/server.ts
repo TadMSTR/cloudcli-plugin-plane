@@ -34,6 +34,13 @@ function loadConfig(): PluginConfig | null {
     const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
     const cfg = JSON.parse(raw) as Partial<PluginConfig>;
     if (!cfg.planeUrl || !cfg.apiKey || !cfg.workspaceSlug) return null;
+    // Warn if config file is world-readable (contains API key)
+    try {
+      const mode = fs.statSync(CONFIG_PATH).mode;
+      if (mode & 0o004) {
+        process.stderr.write('[cloudcli-plugin-plane] WARNING: config.json is world-readable — run: chmod 600 ' + CONFIG_PATH + '\n');
+      }
+    } catch { /* stat failed, ignore */ }
     return cfg as PluginConfig;
   } catch {
     return null;
@@ -102,10 +109,21 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+const MAX_BODY_BYTES = 1_048_576; // 1 MB
+
 function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', c => chunks.push(c as Buffer));
+    let total = 0;
+    req.on('data', (c: Buffer) => {
+      total += c.length;
+      if (total > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('request body too large'));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => {
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')) as Record<string, unknown>);
@@ -236,6 +254,8 @@ async function handleIssueList(res: http.ServerResponse, params: URLSearchParams
   };
   const cycleId = params.get('cycle');
 
+  if (cycleId && !VALID_UUID.test(cycleId)) { json(res, 400, { error: 'invalid id' }); return; }
+
   const cacheKey = `issues:${project}:${JSON.stringify(filters)}:${cycleId ?? ''}`;
   let issues = cache.get<PlaneIssue[]>(cacheKey);
   if (!issues) {
@@ -294,6 +314,7 @@ async function handleIssueCreate(
   const body = await parseBody(req);
   const projectId = body.project as string;
   if (!projectId) { json(res, 400, { error: 'project required' }); return; }
+  if (!VALID_UUID.test(projectId)) { json(res, 400, { error: 'invalid id' }); return; }
 
   const client = new PlaneClient(cfg);
   const issue = await client.createIssue(projectId, body as {
@@ -368,7 +389,10 @@ async function router(
       }
     }
   } catch (err) {
-    const msg = (err as Error).message ?? 'internal error';
+    const raw = (err as Error).message ?? 'internal error';
+    // Pass 4xx messages through (useful for config debugging); strip 5xx path details
+    const is4xx = /^Plane API [45]\d\d/.test(raw) && raw.startsWith('Plane API 4');
+    const msg = is4xx ? raw.replace(/:\s*\/.*$/, '') : 'upstream error';
     json(res, 502, { error: msg });
   }
 }
