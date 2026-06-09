@@ -414,9 +414,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       : null;
 
     const projectOptions = [
-      !state.selectedProjectId
-        ? `<option value="" disabled selected>— select a project —</option>`
-        : '',
+      `<option value="" ${!state.selectedProjectId ? 'selected' : ''}>all projects</option>`,
       ...state.projects.map(p =>
         `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${escHtml(p.identifier)} — ${escHtml(p.name)}</option>`
       ),
