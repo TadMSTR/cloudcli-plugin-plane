@@ -51,6 +51,7 @@ export interface PlaneIssue {
   updated_at: string;
   target_date: string | null;
   completed_at: string | null;
+  parent: string | null;
 }
 
 export interface PlaneComment {
@@ -134,6 +135,7 @@ export interface AppFilters {
   assignee: string;
   label: string;
   cycle: string;
+  sortBy: 'created' | 'priority' | 'updated' | 'due';
 }
 
 export interface AppState {
@@ -153,4 +155,10 @@ export interface AppState {
   loading: boolean;
   error: string | null;
   wsConnected: boolean;
+  narrow: boolean;
+  currentUserId: string | null;
+  currentUserName: string | null;
+  myIssuesMode: boolean;
+  planeUrl: string | null;
+  workspaceSlug: string | null;
 }

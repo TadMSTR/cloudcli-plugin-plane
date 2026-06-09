@@ -34,11 +34,15 @@ let _ppSession: {
   projectId: string | null;
   filters: AppFilters;
   pageSize: number;
+  myIssuesMode: boolean;
+  activePreset: string | null;
 } = {
   active: false,
   projectId: null,
-  filters: { stateGroup: '', priority: '', assignee: '', label: '', cycle: '' },
+  filters: { stateGroup: '', priority: '', assignee: '', label: '', cycle: '', sortBy: 'created' },
   pageSize: 10,
+  myIssuesMode: true,
+  activePreset: null,
 };
 
 // ── Mount / Unmount ────────────────────────────────────────────────────
@@ -58,11 +62,17 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     selectedIssue: null,
     comments: [],
     view: 'list',
-    filters: { stateGroup: '', priority: '', assignee: '', label: '', cycle: '' },
+    filters: { stateGroup: '', priority: '', assignee: '', label: '', cycle: '', sortBy: 'created' },
     search: '',
     loading: true,
     error: null,
     wsConnected: false,
+    narrow: false,
+    currentUserId: null,
+    currentUserName: null,
+    myIssuesMode: true,
+    planeUrl: null,
+    workspaceSlug: null,
   };
 
   let wsInstance: WebSocket | null = null;
@@ -71,6 +81,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   let currentPage = 1;
   let pageSize = _ppSession.pageSize;
   let fromLanding = false; // track when detail was opened from landing view
+  let highlightIndex = -1;
 
   // ── Retry helper ───────────────────────────────────────────────────
   // On failure, waits 1.5 s and tries once more; shows ↻ during the wait.
@@ -93,6 +104,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     _ppSession.projectId = state.selectedProjectId;
     _ppSession.filters = { ...state.filters };
     _ppSession.pageSize = pageSize;
+    _ppSession.myIssuesMode = state.myIssuesMode;
+    _ppSession.activePreset = activePreset;
   }
 
   function restoreSession(): void {
@@ -102,6 +115,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       : true;
     state.selectedProjectId = valid ? _ppSession.projectId : null;
     state.filters = { ..._ppSession.filters };
+    state.myIssuesMode = _ppSession.myIssuesMode;
   }
 
   const root = document.createElement('div');
@@ -113,19 +127,105 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   });
   container.appendChild(root);
 
+  // ── Keyboard navigation ────────────────────────────────────────────
+  root.tabIndex = 0;
+  root.style.outline = 'none';
+
+  root.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Dismiss shortcut help on any key
+    if (showShortcutHelp) {
+      showShortcutHelp = false;
+      render(api.context);
+      return;
+    }
+
+    const active = document.activeElement;
+    const isInput = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement;
+
+    if (state.view === 'detail') {
+      if (e.key === 'Escape') { e.preventDefault(); void goBack(); return; }
+      if (isInput) return;
+      if (e.key === 's') { root.querySelector<HTMLSelectElement>('#pp-detail-state')?.focus(); return; }
+      if (e.key === 'p') { root.querySelector<HTMLSelectElement>('#pp-detail-prio')?.focus(); return; }
+      return;
+    }
+
+    if (state.view === 'create') return;
+    if (isInput) {
+      if (e.key === 'Escape') { (active as HTMLElement).blur(); state.search = ''; render(api.context); }
+      return;
+    }
+    if (state.view !== 'list') return;
+
+    const filtered = filteredIssues();
+    const total = filtered.length;
+    if (e.key === 'j') {
+      e.preventDefault();
+      highlightIndex = highlightIndex < total - 1 ? highlightIndex + 1 : 0;
+      render(api.context);
+      root.querySelector('.pp-issue-row[style*="border-left:2px solid"]')?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'k') {
+      e.preventDefault();
+      highlightIndex = highlightIndex > 0 ? highlightIndex - 1 : total - 1;
+      render(api.context);
+      root.querySelector('.pp-issue-row[style*="border-left:2px solid"]')?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter' && highlightIndex >= 0 && highlightIndex < total) {
+      e.preventDefault();
+      const issue = filtered[highlightIndex];
+      if (!state.selectedProjectId) {
+        void openDetailFromLanding(issue.id, issue.project);
+      } else {
+        void openDetail(issue.id);
+      }
+    } else if (e.key === 'c' && state.selectedProjectId) {
+      e.preventDefault();
+      state.view = 'create';
+      render(api.context);
+    } else if (e.key === '/') {
+      e.preventDefault();
+      root.querySelector<HTMLInputElement>('#pp-search')?.focus();
+    } else if (e.key === 'Escape') {
+      highlightIndex = -1;
+      render(api.context);
+    }
+  });
+
+  // ── Width detection ───────────────────────────────────────────────
+  const NARROW_THRESHOLD = 480;
+  let resizeObserver: ResizeObserver | null = null;
+  resizeObserver = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const w = entry.contentRect.width;
+      const wasNarrow = state.narrow;
+      state.narrow = w > 0 && w < NARROW_THRESHOLD;
+      if (state.narrow !== wasNarrow) render(api.context);
+    }
+  });
+  resizeObserver.observe(root);
+
   // ── Data loading ──────────────────────────────────────────────────
 
   async function init(): Promise<void> {
     try {
       const health = await api.rpc('GET', 'health') as HealthResponse;
       state.configured = health.configured;
+      if (health.planeUrl) state.planeUrl = health.planeUrl;
+      if (health.workspaceSlug) state.workspaceSlug = health.workspaceSlug;
       if (!health.configured) {
         state.loading = false;
         render(api.context);
         return;
       }
-      const res = await api.rpc('GET', 'projects') as { projects: PlaneProject[] };
-      state.projects = res.projects ?? [];
+      // Fetch user identity and projects in parallel
+      const [meRes, projectsRes] = await Promise.all([
+        api.rpc('GET', 'me').catch(() => null) as Promise<{ id: string; display_name: string } | null>,
+        api.rpc('GET', 'projects') as Promise<{ projects: PlaneProject[] }>,
+      ]);
+      if (meRes) {
+        state.currentUserId = meRes.id;
+        state.currentUserName = meRes.display_name;
+      }
+      state.projects = projectsRes.projects ?? [];
       if (_ppSession.active) {
         // Tab switch within same session — restore where the user was
         restoreSession();
@@ -133,7 +233,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
           await loadProjectMeta(state.selectedProjectId);
         }
       }
-      // else: fresh start — selectedProjectId stays null, shows recent items
+      // else: fresh start — selectedProjectId stays null, shows My Issues or recent
       await withRetry(() => loadIssues());
     } catch (err) {
       state.error = (err as Error).message;
@@ -164,7 +264,22 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       if (state.filters.priority)   p.set('priority',    state.filters.priority);
       const qs = p.toString() ? `?${p.toString()}` : '';
       const res = await api.rpc('GET', `issues${qs}`) as IssueListResponse;
-      state.issues = res.issues ?? [];
+      let issues = res.issues ?? [];
+      // My Issues mode: filter to current user's assignments, group by state
+      if (state.myIssuesMode && state.currentUserId) {
+        issues = issues.filter(i => (i.assignees ?? []).includes(state.currentUserId!));
+        const groupOrder: Record<string, number> = { started: 0, unstarted: 1, backlog: 2, completed: 3, cancelled: 4 };
+        const prioOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+        issues.sort((a, b) => {
+          const ga = groupOrder[a.state_detail?.group ?? 'backlog'] ?? 2;
+          const gb = groupOrder[b.state_detail?.group ?? 'backlog'] ?? 2;
+          if (ga !== gb) return ga - gb;
+          const pa = prioOrder[a.priority] ?? 4;
+          const pb = prioOrder[b.priority] ?? 4;
+          return pa - pb;
+        });
+      }
+      state.issues = issues;
       return;
     }
     const p = new URLSearchParams({ project: state.selectedProjectId });
@@ -222,8 +337,9 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   // ── Actions ────────────────────────────────────────────────────────
 
   async function selectProject(id: string): Promise<void> {
+    state.error = null;
     state.selectedProjectId = id || null;
-    state.filters = { stateGroup: '', priority: '', assignee: '', label: '', cycle: '' };
+    state.filters = { stateGroup: '', priority: '', assignee: '', label: '', cycle: '', sortBy: 'created' };
     state.search = '';
     state.view = 'list';
     state.selectedIssue = null;
@@ -250,7 +366,9 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   }
 
   async function applyFilter(key: keyof AppFilters, value: string): Promise<void> {
-    state.filters[key] = value;
+    state.error = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (state.filters as any)[key] = value;
     currentPage = 1;
     saveSession();
     state.loading = true;
@@ -265,6 +383,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   }
 
   async function openDetail(issueId: string): Promise<void> {
+    state.error = null;
     state.view = 'detail';
     state.loading = true;
     render(api.context);
@@ -280,6 +399,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   // Open detail from the landing view: load the issue's project meta first,
   // then show detail. Back button will return to landing.
   async function openDetailFromLanding(issueId: string, projectId: string): Promise<void> {
+    state.error = null;
     fromLanding = true;
     state.selectedProjectId = projectId;
     state.view = 'detail';
@@ -299,6 +419,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   // Smart back: if detail was opened from landing, return there.
   // Otherwise return to the current project's issue list.
   async function goBack(): Promise<void> {
+    state.error = null;
     state.selectedIssue = null;
     if (fromLanding) {
       fromLanding = false;
@@ -325,6 +446,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   }
 
   async function patchState(issueId: string, stateId: string): Promise<void> {
+    state.error = null;
     if (!state.selectedProjectId) return;
     // Optimistic update
     const issue = state.issues.find(i => i.id === issueId);
@@ -350,21 +472,25 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
   async function createIssue(
     name: string,
+    descriptionHtml: string,
     priority: string,
     labelIds: string[],
     assignees: string[]
   ): Promise<void> {
     if (!state.selectedProjectId) return;
+    state.error = null;
     state.loading = true;
     render(api.context);
     try {
-      await api.rpc('POST', 'issues', {
+      const payload: Record<string, unknown> = {
         project: state.selectedProjectId,
         name,
         priority: priority || 'none',
         label_ids: labelIds,
         assignees,
-      });
+      };
+      if (descriptionHtml) payload.description_html = descriptionHtml;
+      await api.rpc('POST', 'issues', payload);
       await loadIssues();
       state.view = 'list';
     } catch (err) {
@@ -377,12 +503,46 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   // ── Render helpers ─────────────────────────────────────────────────
 
   function filteredIssues(): PlaneIssue[] {
-    if (!state.search) return state.issues;
-    const q = state.search.toLowerCase();
-    return state.issues.filter(i =>
-      i.name.toLowerCase().includes(q) ||
-      String(i.sequence_id).includes(q)
-    );
+    let issues = state.issues;
+    if (state.search) {
+      const q = state.search.toLowerCase();
+      issues = issues.filter(i =>
+        i.name.toLowerCase().includes(q) ||
+        String(i.sequence_id).includes(q)
+      );
+    }
+    // Apply preset filters
+    if (activePreset === 'My open' && state.currentUserId) {
+      issues = issues.filter(i => {
+        const g = i.state_detail?.group;
+        return (i.assignees ?? []).includes(state.currentUserId!) && g !== 'completed' && g !== 'cancelled';
+      });
+    } else if (activePreset === 'High priority') {
+      issues = issues.filter(i => {
+        const g = i.state_detail?.group;
+        return (i.priority === 'urgent' || i.priority === 'high') && g !== 'completed' && g !== 'cancelled';
+      });
+    } else if (activePreset === 'Overdue') {
+      issues = issues.filter(i => isOverdue(i));
+    }
+    // Apply client-side sort (skip if My Issues mode already sorted by state group)
+    if (state.myIssuesMode && !state.selectedProjectId) return issues;
+    const sortBy = state.filters.sortBy;
+    if (sortBy === 'priority') {
+      const order: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+      issues = [...issues].sort((a, b) => (order[a.priority] ?? 4) - (order[b.priority] ?? 4));
+    } else if (sortBy === 'updated') {
+      issues = [...issues].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    } else if (sortBy === 'due') {
+      issues = [...issues].sort((a, b) => {
+        if (!a.target_date && !b.target_date) return 0;
+        if (!a.target_date) return 1;
+        if (!b.target_date) return -1;
+        return new Date(a.target_date).getTime() - new Date(b.target_date).getTime();
+      });
+    }
+    // 'created' is the default server order (newest first), no re-sort needed
+    return issues;
   }
 
   function isOverdue(issue: PlaneIssue): boolean {
@@ -424,16 +584,71 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const inputStyle  = `background:${c.surface};color:${c.text};border:1px solid ${c.border};border-radius:4px;padding:4px 8px;font-family:${MONO};font-size:0.72rem;outline:none;flex:1;max-width:200px`;
     const btnStyle    = `background:transparent;border:1px solid ${c.border};color:${c.muted};border-radius:3px;padding:4px 10px;font-family:${MONO};font-size:0.7rem;cursor:pointer`;
 
+    const narrow = state.narrow;
+    // My Issues / All Issues toggle (only in landing view with a known user)
+    const myAllToggle = !state.selectedProjectId && state.currentUserId
+      ? (() => {
+          const myStyle = `padding:3px 8px;font-family:${MONO};font-size:0.6rem;cursor:pointer;border:1px solid ${state.myIssuesMode ? c.accent : c.border};border-radius:3px 0 0 3px;background:${state.myIssuesMode ? c.dim : 'transparent'};color:${state.myIssuesMode ? c.accent : c.muted}`;
+          const allStyle = `padding:3px 8px;font-family:${MONO};font-size:0.6rem;cursor:pointer;border:1px solid ${!state.myIssuesMode ? c.accent : c.border};border-radius:0 3px 3px 0;background:${!state.myIssuesMode ? c.dim : 'transparent'};color:${!state.myIssuesMode ? c.accent : c.muted};border-left:none`;
+          return `<span style="display:inline-flex;flex-shrink:0"><button id="pp-my-issues" style="${myStyle}">my issues</button><button id="pp-all-issues" style="${allStyle}">all issues</button></span>`;
+        })()
+      : '';
+    const newBtn = state.selectedProjectId
+      ? `<button id="pp-btn-new" style="${btnStyle}" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">${narrow ? '+' : '+ new issue'}</button>`
+      : '';
+    const backBtn = state.view !== 'list'
+      ? `<button id="pp-btn-back" style="${btnStyle}" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">← back</button>`
+      : '';
+    const helpBtn = `<button id="pp-btn-help" style="background:transparent;border:1px solid ${c.border};color:${c.muted};border-radius:50%;width:20px;height:20px;font-family:${MONO};font-size:0.6rem;cursor:pointer;padding:0;line-height:18px;text-align:center;flex-shrink:0" title="keyboard shortcuts" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">?</button>`;
+
+    if (narrow) {
+      return `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="font-size:1.1rem;font-weight:700;letter-spacing:-0.02em;flex-shrink:0">
+            ${project ? `${escHtml(project.identifier)}<span style="color:${c.accent}">▌</span>` : `Plane<span style="color:${c.accent}">▌</span>`}
+          </div>
+          <select id="pp-project-sel" style="${selectStyle};flex:1;min-width:0">${projectOptions}</select>
+          ${myAllToggle}${newBtn}${backBtn}${helpBtn}
+          <span style="font-size:0.55rem;color:${isRefreshing ? c.warn : state.wsConnected ? c.ok : c.muted}">${isRefreshing ? '↻' : state.wsConnected ? '●' : '○'}</span>
+        </div>
+        <input id="pp-search" type="text" placeholder="search..." value="${state.search.replace(/"/g, '&quot;')}" style="${inputStyle};max-width:none;width:100%;box-sizing:border-box">
+      </div>`;
+    }
+
     return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
       <div style="font-size:1.3rem;font-weight:700;letter-spacing:-0.02em;flex-shrink:0">
         ${project ? `${escHtml(project.identifier)}<span style="color:${c.accent}">▌</span>` : `Plane<span style="color:${c.accent}">▌</span>`}
       </div>
       <select id="pp-project-sel" style="${selectStyle}">${projectOptions}</select>
       <input id="pp-search" type="text" placeholder="search..." value="${state.search.replace(/"/g, '&quot;')}" style="${inputStyle}">
-      <button id="pp-btn-new" style="${btnStyle}" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">+ new issue</button>
-      ${state.view !== 'list' ? `<button id="pp-btn-back" style="${btnStyle}" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">← back</button>` : ''}
+      ${myAllToggle}${newBtn}${backBtn}${helpBtn}
       <span style="font-size:0.55rem;color:${isRefreshing ? c.warn : state.wsConnected ? c.ok : c.muted};margin-left:auto">${isRefreshing ? '↻ loading' : state.wsConnected ? '● live' : '○ offline'}</span>
     </div>`;
+  }
+
+  let filtersExpanded = false;
+  let showShortcutHelp = false;
+  let activePreset: string | null = _ppSession.active ? (_ppSession as any).activePreset ?? null : null;
+
+  function buildShortcutHelp(c: ReturnType<typeof themeColors>): string {
+    if (!showShortcutHelp) return '';
+    const key = (k: string) => `<span style="display:inline-block;min-width:24px;padding:1px 5px;background:${c.surface};border:1px solid ${c.border};border-radius:2px;text-align:center;font-size:0.6rem;color:${c.accent}">${k}</span>`;
+    const row = (k: string, d: string) => `<div style="display:flex;gap:10px;align-items:center">${key(k)}<span style="font-size:0.62rem;color:${c.muted}">${d}</span></div>`;
+    return `<div id="pp-help-overlay" style="background:${c.bg};border:1px solid ${c.border};border-radius:4px;padding:12px 16px;margin-bottom:12px;display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:0.65rem;font-weight:600;color:${c.text};margin-bottom:4px">keyboard shortcuts</div>
+      ${row('j/k', 'navigate issues')}${row('Enter', 'open issue')}${row('c', 'create issue')}
+      ${row('/', 'search')}${row('Esc', 'clear / back')}${row('s', 'focus state (detail)')}${row('p', 'focus priority (detail)')}
+      <div style="font-size:0.5rem;color:${c.muted};margin-top:4px">press any key to dismiss</div>
+    </div>`;
+  }
+
+  function buildPresetBar(c: ReturnType<typeof themeColors>): string {
+    const presets = ['My open', 'High priority', 'Overdue'];
+    const pills = presets.map(name => {
+      const active = activePreset === name;
+      return `<button class="pp-preset" data-preset="${escHtml(name)}" style="background:${active ? c.dim : 'transparent'};color:${active ? c.accent : c.muted};border:1px solid ${active ? c.accent : c.border};border-radius:12px;padding:3px 10px;font-family:${MONO};font-size:0.58rem;cursor:pointer" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${active ? c.accent : c.border}';this.style.color='${active ? c.accent : c.muted}'">${escHtml(name)}</button>`;
+    }).join('');
+    return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${pills}</div>`;
   }
 
   function buildFilters(c: ReturnType<typeof themeColors>): string {
@@ -450,6 +665,20 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       `<option value="${p}" ${state.filters.priority === p ? 'selected' : ''}>${p || 'all priorities'}</option>`
     ).join('');
 
+    const activeCount = [state.filters.stateGroup, state.filters.priority, state.filters.assignee, state.filters.label, state.filters.cycle].filter(Boolean).length;
+
+    // Narrow mode: collapsible filter toggle
+    if (state.narrow) {
+      const toggleStyle = `background:${activeCount ? c.dim : c.surface};color:${activeCount ? c.accent : c.muted};border:1px solid ${activeCount ? c.accent : c.border};border-radius:3px;padding:4px 10px;font-family:${MONO};font-size:0.62rem;cursor:pointer;width:100%;text-align:left`;
+      const filterSelects = state.selectedProjectId
+        ? buildFilterSelectsAll(selectStyle, stateOpts, prioOpts)
+        : buildFilterSelectsBasic(selectStyle, stateOpts, prioOpts);
+      return `<div style="margin-bottom:12px">
+        <button id="pp-filter-toggle" style="${toggleStyle}">Filters${activeCount ? ` (${activeCount})` : ''} ${filtersExpanded ? '▾' : '▸'}</button>
+        ${filtersExpanded ? `<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">${filterSelects}</div>` : ''}
+      </div>`;
+    }
+
     // All-projects mode: only state + priority (assignee/label/cycle are per-project)
     if (!state.selectedProjectId) {
       return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
@@ -457,6 +686,27 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         <select id="pp-f-prio" style="${selectStyle(!!state.filters.priority)}">${prioOpts}</select>
       </div>`;
     }
+
+    return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+      ${buildFilterSelectsAll(selectStyle, stateOpts, prioOpts)}
+    </div>`;
+  }
+
+  function buildFilterSelectsBasic(
+    selectStyle: (active: boolean) => string,
+    stateOpts: string,
+    prioOpts: string,
+  ): string {
+    return `<select id="pp-f-state" style="${selectStyle(!!state.filters.stateGroup)}">${stateOpts}</select>
+      <select id="pp-f-prio" style="${selectStyle(!!state.filters.priority)}">${prioOpts}</select>`;
+  }
+
+  function buildFilterSelectsAll(
+    selectStyle: (active: boolean) => string,
+    stateOpts: string,
+    prioOpts: string,
+  ): string {
+    if (!state.selectedProjectId) return buildFilterSelectsBasic(selectStyle, stateOpts, prioOpts);
 
     const assigneeOpts = [
       `<option value="" ${!state.filters.assignee ? 'selected' : ''}>all assignees</option>`,
@@ -477,16 +727,14 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       ),
     ].join('');
 
-    return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-      <select id="pp-f-state" style="${selectStyle(!!state.filters.stateGroup)}">${stateOpts}</select>
+    return `<select id="pp-f-state" style="${selectStyle(!!state.filters.stateGroup)}">${stateOpts}</select>
       <select id="pp-f-prio" style="${selectStyle(!!state.filters.priority)}">${prioOpts}</select>
       <select id="pp-f-assignee" style="${selectStyle(!!state.filters.assignee)}">${assigneeOpts}</select>
       <select id="pp-f-label" style="${selectStyle(!!state.filters.label)}">${labelOpts}</select>
-      <select id="pp-f-cycle" style="${selectStyle(!!state.filters.cycle)}">${cycleOpts}</select>
-    </div>`;
+      <select id="pp-f-cycle" style="${selectStyle(!!state.filters.cycle)}">${cycleOpts}</select>`;
   }
 
-  function buildIssueRow(issue: PlaneIssue, c: ReturnType<typeof themeColors>, idx: number): string {
+  function buildIssueRow(issue: PlaneIssue, c: ReturnType<typeof themeColors>, idx: number, pageOffset: number): string {
     const sg = issue.state_detail?.group ?? 'unstarted';
     const dot = stateColor(sg, c);
     const overdue = isOverdue(issue);
@@ -514,17 +762,69 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
           return `<select class="pp-state-sel" data-id="${issue.id}" style="${stateSelectStyle}" onclick="event.stopPropagation()">${stateOpts}</select>`;
         })();
 
+    // Sub-issue indicators
+    const isChild = !!issue.parent;
+    const childCount = state.issues.filter(i => i.parent === issue.id).length;
+    const childPrefix = isChild ? `<span style="font-size:0.55rem;color:${c.muted};margin-right:2px">↳</span>` : '';
+    const subBadge = childCount > 0 ? `<span style="font-size:0.5rem;color:${c.muted};flex-shrink:0" title="${childCount} sub-issue${childCount > 1 ? 's' : ''}">▸${childCount}</span>` : '';
+
+    const highlighted = highlightIndex === pageOffset + idx;
+    const hlBorder = highlighted ? `border-left:2px solid ${c.accent};` : 'border-left:2px solid transparent;';
+    const hlBg = highlighted ? c.dim : 'transparent';
+
+    if (state.narrow) {
+      return `<div class="pp-up" style="animation-delay:${idx * 0.03}s">
+        <div class="pp-issue-row" data-id="${issue.id}" data-project="${escHtml(issue.project ?? '')}" style="display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-bottom:1px solid ${c.border};${hlBorder}background:${hlBg};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='${hlBg}'">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:0.65rem;color:${pColor};flex-shrink:0;width:16px;text-align:center">${pIcon}</span>
+            <div style="width:6px;height:6px;border-radius:50%;background:${dot};flex-shrink:0"></div>
+            <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0">${escHtml(identifier)}</span>
+            ${childPrefix}<span style="flex:1;font-size:0.72rem;color:${isChild ? c.muted : c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(issue.name)}</span>
+            ${subBadge}${dateStr}
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding-left:28px">
+            ${stateEl}
+          </div>
+        </div>
+      </div>`;
+    }
+
     return `<div class="pp-up" style="animation-delay:${idx * 0.03}s">
-      <div class="pp-issue-row" data-id="${issue.id}" data-project="${escHtml(issue.project ?? '')}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'">
+      <div class="pp-issue-row" data-id="${issue.id}" data-project="${escHtml(issue.project ?? '')}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};${hlBorder}background:${hlBg};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='${hlBg}'"
         <span style="font-size:0.65rem;color:${pColor};flex-shrink:0;width:20px;text-align:center">${pIcon}</span>
         <div style="width:6px;height:6px;border-radius:50%;background:${dot};flex-shrink:0"></div>
         <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0;min-width:60px">${escHtml(identifier)}</span>
-        <span style="flex:1;font-size:0.72rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(issue.name)}</span>
-        ${dateStr}
+        ${childPrefix}<span style="flex:1;font-size:0.72rem;color:${isChild ? c.muted : c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(issue.name)}</span>
+        ${subBadge}${dateStr}
         <span style="font-size:0.55rem;color:${c.muted};flex-shrink:0">${ago(issue.updated_at)}</span>
         ${stateEl}
       </div>
     </div>`;
+  }
+
+  function buildCountBadges(c: ReturnType<typeof themeColors>, filtered: PlaneIssue[]): string {
+    if (filtered.length === 0) return '';
+    const counts: Record<string, number> = {};
+    for (const issue of filtered) {
+      const g = issue.state_detail?.group ?? 'unstarted';
+      counts[g] = (counts[g] ?? 0) + 1;
+    }
+    const groups = ['started', 'unstarted', 'backlog', 'completed', 'cancelled'];
+    const labels: Record<string, string> = { started: 'in progress', unstarted: 'todo', backlog: 'backlog', completed: 'done', cancelled: 'cancelled' };
+    const badges = groups
+      .filter(g => counts[g])
+      .map(g => {
+        const active = state.filters.stateGroup === g;
+        return `<span class="pp-count-badge" data-group="${g}" style="cursor:pointer;font-size:0.6rem;padding:2px 6px;border-radius:3px;background:${active ? c.dim : 'transparent'};color:${active ? c.accent : c.muted}" onmouseover="this.style.color='${c.accent}'" onmouseout="this.style.color='${active ? c.accent : c.muted}'">${counts[g]} <span style="color:${c.muted}">${labels[g]}</span></span>`;
+      });
+    badges.push(`<span style="font-size:0.6rem;color:${c.muted}">${filtered.length} total</span>`);
+    const sortStyle = `background:${c.surface};color:${c.muted};border:1px solid ${c.border};border-radius:3px;padding:2px 5px;font-family:${MONO};font-size:0.55rem;outline:none;cursor:pointer;margin-left:auto`;
+    const sortOpts = [
+      { v: 'created', l: 'newest' }, { v: 'priority', l: 'priority' },
+      { v: 'updated', l: 'updated' }, { v: 'due', l: 'due date' },
+    ].map(o => `<option value="${o.v}" ${state.filters.sortBy === o.v ? 'selected' : ''}>${o.l}</option>`).join('');
+    const sortSelect = `<select id="pp-sort" style="${sortStyle}" title="sort by">${sortOpts}</select>`;
+    return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:0 10px">${badges.join(`<span style="color:${c.border}">|</span>`)}${sortSelect}</div>`;
   }
 
   function buildIssueList(c: ReturnType<typeof themeColors>, filtered: PlaneIssue[]): string {
@@ -536,7 +836,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     }
     const start = (currentPage - 1) * pageSize;
     const page = pageSize > 0 ? filtered.slice(start, start + pageSize) : filtered;
-    return page.map((issue, i) => buildIssueRow(issue, c, i)).join('');
+    return page.map((issue, i) => buildIssueRow(issue, c, i, start)).join('');
   }
 
   function buildPagination(c: ReturnType<typeof themeColors>, total: number): string {
@@ -600,23 +900,42 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       </div>`).join('');
 
     return `<div class="pp-up">
-      <div style="font-size:0.6rem;color:${c.muted};margin-bottom:8px">${escHtml(identifier)}</div>
+      <div style="font-size:0.6rem;color:${c.muted};margin-bottom:8px">${escHtml(identifier)}${state.planeUrl && state.workspaceSlug ? ` <a href="${state.planeUrl}/${state.workspaceSlug}/projects/${state.selectedProjectId}/issues/${issue.id}" target="_blank" rel="noopener" style="color:${c.muted};text-decoration:none;font-size:0.55rem" title="Open in Plane" onmouseover="this.style.color='${c.accent}'" onmouseout="this.style.color='${c.muted}'">↗</a>` : ''}</div>
+      ${issue.parent ? (() => {
+        const parentIssue = state.issues.find(i => i.id === issue.parent);
+        const parentProject = parentIssue ? state.projects.find(p => p.id === parentIssue.project) : null;
+        const parentLabel = parentIssue && parentProject ? `${parentProject.identifier}-${parentIssue.sequence_id}` : '';
+        return parentLabel
+          ? `<div style="font-size:0.55rem;color:${c.muted};margin-bottom:4px">↳ parent: <span class="pp-parent-link" data-id="${parentIssue!.id}" style="color:${c.accent};cursor:pointer;text-decoration:underline">${escHtml(parentLabel)}</span></div>`
+          : `<div style="font-size:0.55rem;color:${c.muted};margin-bottom:4px">↳ sub-issue</div>`;
+      })() : ''}
       <div style="font-size:1.1rem;font-weight:700;color:${c.text};margin-bottom:16px;line-height:1.4">${escHtml(issue.name)}</div>
+      ${(() => {
+        const subIssues = state.issues.filter(i => i.parent === issue.id);
+        if (subIssues.length === 0) return '';
+        const project = state.projects.find(p => p.id === state.selectedProjectId);
+        const subList = subIssues.map(s => {
+          const sid = project ? `${project.identifier}-${s.sequence_id}` : `#${s.sequence_id}`;
+          const sg = s.state_detail?.group ?? 'unstarted';
+          return `<div class="pp-sub-link" data-id="${s.id}" style="font-size:0.62rem;color:${c.muted};cursor:pointer;padding:2px 0" onmouseover="this.style.color='${c.accent}'" onmouseout="this.style.color='${c.muted}'"><span style="color:${stateColor(sg, c)}">●</span> ${escHtml(sid)} ${escHtml(s.name)}</div>`;
+        }).join('');
+        return `<div style="margin-bottom:12px"><div style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">${subIssues.length} sub-issue${subIssues.length > 1 ? 's' : ''}</div>${subList}</div>`;
+      })()}
 
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-        <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="display:flex;${state.narrow ? 'flex-direction:column' : ''};gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="display:flex;${state.narrow ? 'align-items:center;justify-content:space-between' : 'flex-direction:column'};gap:4px">
           <span style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em">state</span>
           <select id="pp-detail-state" style="${selectStyle}">${stateOpts}</select>
         </div>
-        <div style="display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;${state.narrow ? 'align-items:center;justify-content:space-between' : 'flex-direction:column'};gap:4px">
           <span style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em">priority</span>
           <select id="pp-detail-prio" style="${selectStyle}">${prioOpts}</select>
         </div>
-        <div style="display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;${state.narrow ? 'align-items:center;justify-content:space-between' : 'flex-direction:column'};gap:4px">
           <span style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em">assignees</span>
           <span style="font-size:0.7rem;color:${c.text}">${assigneeNames}</span>
         </div>
-        ${issue.target_date ? `<div style="display:flex;flex-direction:column;gap:4px">
+        ${issue.target_date ? `<div style="display:flex;${state.narrow ? 'align-items:center;justify-content:space-between' : 'flex-direction:column'};gap:4px">
           <span style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em">due</span>
           <span style="font-size:0.7rem;color:${isOverdue(issue) ? c.error : c.text}">${new Date(issue.target_date).toLocaleDateString()}</span>
         </div>` : ''}
@@ -633,6 +952,11 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         <div style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px">comments (${state.comments.length})</div>
         ${commentList}
       ` : ''}
+
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:flex-start">
+        <input id="pp-comment-input" type="text" placeholder="add a comment..." style="flex:1;background:${c.surface};color:${c.text};border:1px solid ${c.border};border-radius:3px;padding:6px 8px;font-family:${MONO};font-size:0.68rem;outline:none;box-sizing:border-box">
+        <button id="pp-comment-submit" style="background:${c.accent};color:${c.bg};border:none;border-radius:3px;padding:6px 12px;font-family:${MONO};font-size:0.68rem;cursor:pointer;font-weight:600;flex-shrink:0">send</button>
+      </div>
     </div>`;
   }
 
@@ -650,7 +974,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     ].join('');
     const assigneeOpts = [
       `<option value="">— none —</option>`,
-      ...state.members.map(m => `<option value="${m.id}">${escHtml(m.display_name)}</option>`),
+      ...state.members.map(m => `<option value="${m.id}" ${m.id === state.currentUserId ? 'selected' : ''}>${escHtml(m.display_name)}</option>`),
     ].join('');
 
     return `<div class="pp-up" style="max-width:600px">
@@ -721,7 +1045,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       content = `${buildHeader(c, dark)}${buildDetail(c)}`;
     } else {
       const filtered = filteredIssues();
-      content = `${buildHeader(c, dark)}${buildFilters(c)}<div id="pp-issue-list">${buildIssueList(c, filtered)}</div>${buildPagination(c, filtered.length)}`;
+      content = `${buildHeader(c, dark)}${buildShortcutHelp(c)}${buildPresetBar(c)}${buildFilters(c)}${buildCountBadges(c, filtered)}<div id="pp-issue-list">${buildIssueList(c, filtered)}</div>${buildPagination(c, filtered.length)}`;
     }
 
     root.innerHTML = content;
@@ -749,15 +1073,73 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       });
     }
 
+    // My Issues / All Issues toggle
+    root.querySelector('#pp-my-issues')?.addEventListener('click', () => {
+      if (!state.myIssuesMode) {
+        state.myIssuesMode = true;
+        saveSession();
+        state.loading = true;
+        render(api.context);
+        void withRetry(() => loadIssues()).then(() => { state.loading = false; render(api.context); }).catch(err => { state.error = (err as Error).message; state.loading = false; render(api.context); });
+      }
+    });
+    root.querySelector('#pp-all-issues')?.addEventListener('click', () => {
+      if (state.myIssuesMode) {
+        state.myIssuesMode = false;
+        saveSession();
+        state.loading = true;
+        render(api.context);
+        void withRetry(() => loadIssues()).then(() => { state.loading = false; render(api.context); }).catch(err => { state.error = (err as Error).message; state.loading = false; render(api.context); });
+      }
+    });
+
     // New issue button
     root.querySelector('#pp-btn-new')?.addEventListener('click', () => {
       state.view = 'create';
       render(api.context);
     });
 
+    // Help overlay
+    root.querySelector('#pp-btn-help')?.addEventListener('click', () => {
+      showShortcutHelp = !showShortcutHelp;
+      render(api.context);
+    });
+
     // Back button — returns to landing if that's where we came from
     root.querySelector('#pp-btn-back')?.addEventListener('click', () => {
       void goBack();
+    });
+
+    // Preset buttons
+    root.querySelectorAll<HTMLElement>('.pp-preset').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const preset = btn.dataset['preset'] ?? '';
+        activePreset = activePreset === preset ? null : preset;
+        currentPage = 1;
+        saveSession();
+        render(api.context);
+      });
+    });
+
+    // Sort dropdown
+    root.querySelector<HTMLSelectElement>('#pp-sort')?.addEventListener('change', (e) => {
+      state.filters.sortBy = (e.target as HTMLSelectElement).value as AppFilters['sortBy'];
+      saveSession();
+      render(api.context);
+    });
+
+    // Count badge clicks (toggle state group filter)
+    root.querySelectorAll<HTMLElement>('.pp-count-badge').forEach(badge => {
+      badge.addEventListener('click', () => {
+        const group = badge.dataset['group'] ?? '';
+        void applyFilter('stateGroup', state.filters.stateGroup === group ? '' : group);
+      });
+    });
+
+    // Filter toggle (narrow mode)
+    root.querySelector('#pp-filter-toggle')?.addEventListener('click', () => {
+      filtersExpanded = !filtersExpanded;
+      render(api.context);
     });
 
     // Filter selects
@@ -831,6 +1213,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
             { priority: detailPrio.value }
           );
           state.selectedIssue.priority = detailPrio.value as PlaneIssue['priority'];
+          await loadIssues();
+          render(api.context);
         } catch (err) {
           state.error = (err as Error).message;
           render(api.context);
@@ -838,14 +1222,53 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       });
     }
 
+    // Parent/sub-issue links in detail view
+    root.querySelector<HTMLElement>('.pp-parent-link')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const id = (e.target as HTMLElement).dataset['id'];
+      if (id) void openDetail(id);
+    });
+    root.querySelectorAll<HTMLElement>('.pp-sub-link').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.dataset['id'];
+        if (id) void openDetail(id);
+      });
+    });
+
+    // Comment submit
+    const commentSubmit = root.querySelector('#pp-comment-submit');
+    const commentInput = root.querySelector<HTMLInputElement>('#pp-comment-input');
+    if (commentSubmit && commentInput) {
+      const doSubmit = async () => {
+        const text = commentInput.value.trim();
+        if (!text || !state.selectedProjectId || !state.selectedIssue) return;
+        const commentHtml = `<p>${escHtml(text).replace(/\n/g, '</p><p>')}</p>`;
+        commentInput.value = '';
+        try {
+          await api.rpc('POST', `issues/${state.selectedIssue.id}/comments?project=${state.selectedProjectId}`, { comment_html: commentHtml });
+          await loadDetail(state.selectedIssue.id);
+          render(api.context);
+        } catch (err) {
+          state.error = (err as Error).message;
+          render(api.context);
+        }
+      };
+      commentSubmit.addEventListener('click', () => void doSubmit());
+      commentInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void doSubmit(); }
+      });
+    }
+
     // Create form: submit
     root.querySelector('#pp-create-submit')?.addEventListener('click', () => {
       const title    = (root.querySelector<HTMLInputElement>('#pp-create-title'))?.value.trim() ?? '';
+      const desc     = (root.querySelector<HTMLTextAreaElement>('#pp-create-desc'))?.value.trim() ?? '';
       const prio     = (root.querySelector<HTMLSelectElement>('#pp-create-prio'))?.value ?? '';
       const labelId  = (root.querySelector<HTMLSelectElement>('#pp-create-label'))?.value ?? '';
       const assignee = (root.querySelector<HTMLSelectElement>('#pp-create-assignee'))?.value ?? '';
       if (!title) return;
-      void createIssue(title, prio, labelId ? [labelId] : [], assignee ? [assignee] : []);
+      const descHtml = desc ? `<p>${escHtml(desc).replace(/\n/g, '</p><p>')}</p>` : '';
+      void createIssue(title, descHtml, prio, labelId ? [labelId] : [], assignee ? [assignee] : []);
     });
 
     // Create form: cancel
@@ -867,6 +1290,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   (container as HTMLElement & { __ppCleanup?: () => void }).__ppCleanup = () => {
     wsClosed = true;
     if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    resizeObserver?.disconnect();
+    resizeObserver = null;
     unsubCtx?.();
     wsInstance?.close();
     wsInstance = null;
