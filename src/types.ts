@@ -40,7 +40,8 @@ export interface PlaneIssue {
   sequence_id: number;
   project: string;            // project UUID (present on workspace-level issue list)
   name: string;
-  description_stripped: string;
+  description_stripped: string | null;
+  description_html: string | null;
   priority: 'urgent' | 'high' | 'medium' | 'low' | 'none';
   state: string;              // state UUID
   state_detail: PlaneState;

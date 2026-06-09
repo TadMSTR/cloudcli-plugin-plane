@@ -339,6 +339,16 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     return state.members.find(m => m.id === id)?.display_name ?? id.slice(0, 8);
   }
 
+  // Strip HTML tags for description fallback when Plane returns description_stripped: null
+  function stripHtml(html: string): string {
+    return html
+      .replace(/<\/?(p|li|div|br)[^>]*>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   // ── HTML builders ──────────────────────────────────────────────────
 
   function buildHeader(c: ReturnType<typeof themeColors>, dark: boolean): string {
@@ -537,7 +547,10 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
       ${labelBadges ? `<div style="margin-bottom:16px;display:flex;gap:6px;flex-wrap:wrap">${labelBadges}</div>` : ''}
 
-      ${issue.description_stripped ? `<div style="background:${c.surface};border:1px solid ${c.border};border-radius:3px;padding:12px;margin-bottom:16px;font-size:0.72rem;color:${c.text};line-height:1.7;white-space:pre-wrap">${escHtml(issue.description_stripped)}</div>` : ''}
+      ${(() => {
+        const desc = issue.description_stripped || (issue.description_html ? stripHtml(issue.description_html) : '');
+        return desc ? `<div style="background:${c.surface};border:1px solid ${c.border};border-radius:3px;padding:12px;margin-bottom:16px;font-size:0.72rem;color:${c.text};line-height:1.7;white-space:pre-wrap">${escHtml(desc)}</div>` : '';
+      })()}
 
       ${state.comments.length > 0 ? `
         <div style="font-size:0.55rem;color:${c.muted};text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px">comments (${state.comments.length})</div>

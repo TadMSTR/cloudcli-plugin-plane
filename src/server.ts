@@ -366,6 +366,8 @@ async function handleIssueUpdate(
   const issue = await client.updateIssue(projectId, issueId, body as Partial<PlaneIssue>);
 
   cache.invalidate(`issues:${projectId}`);
+  cache.invalidate('workspace-issues-all:');
+  cache.invalidate('issue-counts:');
   broadcast({ type: 'refresh' });
   json(res, 200, { issue });
 }
@@ -392,6 +394,8 @@ async function handleIssueCreate(
   });
 
   cache.invalidate(`issues:${projectId}`);
+  cache.invalidate('workspace-issues-all:');
+  cache.invalidate('issue-counts:');
   broadcast({ type: 'refresh' });
   json(res, 201, { issue });
 }
