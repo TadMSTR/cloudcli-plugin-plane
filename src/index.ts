@@ -35,6 +35,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     configured: false,
     projects: [],
     selectedProjectId: null,
+    issueCounts: {},
     states: [],
     members: [],
     labels: [],
@@ -75,11 +76,14 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       }
       const res = await api.rpc('GET', 'projects') as { projects: PlaneProject[] };
       state.projects = res.projects ?? [];
-      if (state.projects.length > 0) {
-        state.selectedProjectId = state.projects[0].id;
-        await loadProjectMeta(state.projects[0].id);
-        await loadIssues();
-      }
+      // Fetch open issue counts (best-effort; failures don't block the view)
+      try {
+        const countsRes = await api.rpc('GET', 'issue-counts') as { counts: Record<string, number> };
+        state.issueCounts = countsRes.counts ?? {};
+      } catch { /* counts unavailable — carry on without badges */ }
+      // Default: all-projects view, newest first
+      state.selectedProjectId = null;
+      await loadIssues();
     } catch (err) {
       state.error = (err as Error).message;
     }
@@ -102,7 +106,16 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   }
 
   async function loadIssues(): Promise<void> {
-    if (!state.selectedProjectId) return;
+    if (!state.selectedProjectId) {
+      // All-projects view — workspace-level endpoint, ordered newest first
+      const p = new URLSearchParams();
+      if (state.filters.stateGroup) p.set('state_group', state.filters.stateGroup);
+      if (state.filters.priority)   p.set('priority',    state.filters.priority);
+      const qs = p.toString() ? `?${p.toString()}` : '';
+      const res = await api.rpc('GET', `issues${qs}`) as IssueListResponse;
+      state.issues = res.issues ?? [];
+      return;
+    }
     const p = new URLSearchParams({ project: state.selectedProjectId });
     if (state.filters.stateGroup) p.set('state_group', state.filters.stateGroup);
     if (state.filters.priority)   p.set('priority',    state.filters.priority);
@@ -156,7 +169,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   // ── Actions ────────────────────────────────────────────────────────
 
   async function selectProject(id: string): Promise<void> {
-    state.selectedProjectId = id;
+    state.selectedProjectId = id || null;
     state.filters = { stateGroup: '', priority: '', assignee: '', label: '', cycle: '' };
     state.search = '';
     state.view = 'list';
@@ -164,7 +177,14 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     state.loading = true;
     render(api.context);
     try {
-      await loadProjectMeta(id);
+      if (state.selectedProjectId) {
+        await loadProjectMeta(state.selectedProjectId);
+      } else {
+        state.states  = [];
+        state.members = [];
+        state.labels  = [];
+        state.cycles  = [];
+      }
       await loadIssues();
     } catch (err) {
       state.error = (err as Error).message;
@@ -274,11 +294,20 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   // ── HTML builders ──────────────────────────────────────────────────
 
   function buildHeader(c: ReturnType<typeof themeColors>, dark: boolean): string {
-    const project = state.projects.find(p => p.id === state.selectedProjectId);
+    const project = state.selectedProjectId
+      ? state.projects.find(p => p.id === state.selectedProjectId)
+      : null;
 
-    const projectOptions = state.projects.map(p =>
-      `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${escHtml(p.identifier)} — ${escHtml(p.name)}</option>`
-    ).join('');
+    const allOpen = Object.values(state.issueCounts).reduce((s, n) => s + n, 0);
+    const allLabel = `all projects${allOpen > 0 ? ` (${allOpen})` : ''}`;
+    const projectOptions = [
+      `<option value="" ${!state.selectedProjectId ? 'selected' : ''}>${allLabel}</option>`,
+      ...state.projects.map(p => {
+        const cnt = state.issueCounts[p.id] ?? 0;
+        const badge = cnt > 0 ? ` (${cnt})` : '';
+        return `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${escHtml(p.identifier)} — ${escHtml(p.name)}${badge}</option>`;
+      }),
+    ].join('');
 
     const selectStyle = `background:${c.surface};color:${c.text};border:1px solid ${c.border};border-radius:4px;padding:4px 8px;font-family:${MONO};font-size:0.72rem;outline:none;cursor:pointer`;
     const inputStyle  = `background:${c.surface};color:${c.text};border:1px solid ${c.border};border-radius:4px;padding:4px 8px;font-family:${MONO};font-size:0.72rem;outline:none;flex:1;max-width:200px`;
@@ -309,6 +338,15 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const prioOpts = priorities.map(p =>
       `<option value="${p}" ${state.filters.priority === p ? 'selected' : ''}>${p || 'all priorities'}</option>`
     ).join('');
+
+    // All-projects mode: only state + priority (assignee/label/cycle are per-project)
+    if (!state.selectedProjectId) {
+      return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        <select id="pp-f-state" style="${selectStyle(!!state.filters.stateGroup)}">${stateOpts}</select>
+        <select id="pp-f-prio" style="${selectStyle(!!state.filters.priority)}">${prioOpts}</select>
+      </div>`;
+    }
+
     const assigneeOpts = [
       `<option value="" ${!state.filters.assignee ? 'selected' : ''}>all assignees</option>`,
       ...state.members.map(m =>
@@ -347,14 +385,23 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     const pIcon = priorityIcon(issue.priority);
     const pColor = priorityColor(issue.priority, c);
 
-    const project = state.projects.find(p => p.id === state.selectedProjectId);
+    const isAllProjects = !state.selectedProjectId;
+    const project = isAllProjects
+      ? state.projects.find(p => p.id === issue.project)
+      : state.projects.find(p => p.id === state.selectedProjectId);
     const identifier = project ? `${project.identifier}-${issue.sequence_id}` : `#${issue.sequence_id}`;
 
-    // State dropdown (inline)
-    const stateOpts = state.states.map(s =>
-      `<option value="${s.id}" ${s.id === issue.state ? 'selected' : ''}>${escHtml(s.name)}</option>`
-    ).join('');
+    // In all-projects mode: static state pill (no per-project states loaded)
+    // In per-project mode: inline state dropdown
     const stateSelectStyle = `background:${c.surface};color:${c.muted};border:1px solid ${c.border};border-radius:3px;padding:2px 5px;font-family:${MONO};font-size:0.55rem;outline:none;cursor:pointer;max-width:100px`;
+    const stateEl = isAllProjects
+      ? `<span style="font-size:0.55rem;color:${c.muted};flex-shrink:0;padding:2px 5px;border:1px solid ${c.border};border-radius:3px;white-space:nowrap">${escHtml(issue.state_detail?.name ?? sg)}</span>`
+      : (() => {
+          const stateOpts = state.states.map(s =>
+            `<option value="${s.id}" ${s.id === issue.state ? 'selected' : ''}>${escHtml(s.name)}</option>`
+          ).join('');
+          return `<select class="pp-state-sel" data-id="${issue.id}" style="${stateSelectStyle}" onclick="event.stopPropagation()">${stateOpts}</select>`;
+        })();
 
     return `<div class="pp-up" style="animation-delay:${idx * 0.03}s">
       <div class="pp-issue-row" data-id="${issue.id}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'">
@@ -364,7 +411,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         <span style="flex:1;font-size:0.72rem;color:${c.text};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(issue.name)}</span>
         ${dateStr}
         <span style="font-size:0.55rem;color:${c.muted};flex-shrink:0">${ago(issue.updated_at)}</span>
-        <select class="pp-state-sel" data-id="${issue.id}" style="${stateSelectStyle}" onclick="event.stopPropagation()">${stateOpts}</select>
+        ${stateEl}
       </div>
     </div>`;
   }

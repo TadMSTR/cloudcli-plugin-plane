@@ -239,6 +239,45 @@ async function handleCycles(res: http.ServerResponse, params: URLSearchParams): 
   json(res, 200, { cycles });
 }
 
+async function handleWorkspaceIssues(res: http.ServerResponse, params: URLSearchParams): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
+
+  const filters = {
+    state_group: params.get('state_group') ?? undefined,
+    priority:    params.get('priority')    ?? undefined,
+  };
+  const cacheKey = `workspace-issues:${JSON.stringify(filters)}`;
+  let issues = cache.get<PlaneIssue[]>(cacheKey);
+  if (!issues) {
+    const client = new PlaneClient(cfg);
+    issues = await client.listWorkspaceIssues(filters);
+    cache.set(cacheKey, issues, TTL_ISSUES);
+  }
+  json(res, 200, { issues, total: issues.length });
+}
+
+async function handleIssueCounts(res: http.ServerResponse): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
+
+  const cacheKey = `issue-counts:${cfg.workspaceSlug}`;
+  let counts = cache.get<Record<string, number>>(cacheKey);
+  if (!counts) {
+    const client = new PlaneClient(cfg);
+    const issues = await client.listWorkspaceIssues({});
+    counts = {};
+    for (const issue of issues) {
+      if (!issue.project) continue;
+      const group = issue.state_detail?.group;
+      if (group === 'completed' || group === 'cancelled') continue;
+      counts[issue.project] = (counts[issue.project] ?? 0) + 1;
+    }
+    cache.set(cacheKey, counts, TTL_PROJECTS);
+  }
+  json(res, 200, { counts });
+}
+
 async function handleIssueList(res: http.ServerResponse, params: URLSearchParams): Promise<void> {
   const cfg = loadConfig();
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
@@ -364,8 +403,14 @@ async function router(
       await handleLabels(res, params);
     } else if (pathname === '/cycles' && method === 'GET') {
       await handleCycles(res, params);
+    } else if (pathname === '/issue-counts' && method === 'GET') {
+      await handleIssueCounts(res);
     } else if (pathname === '/issues' && method === 'GET') {
-      await handleIssueList(res, params);
+      if (params.get('project')) {
+        await handleIssueList(res, params);
+      } else {
+        await handleWorkspaceIssues(res, params);
+      }
     } else if (pathname === '/issues' && method === 'POST') {
       await handleIssueCreate(req, res);
     } else {

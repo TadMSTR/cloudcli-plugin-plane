@@ -38,6 +38,7 @@ export interface PlaneCycle {
 export interface PlaneIssue {
   id: string;
   sequence_id: number;
+  project: string;            // project UUID (present on workspace-level issue list)
   name: string;
   description_stripped: string;
   priority: 'urgent' | 'high' | 'medium' | 'low' | 'none';
@@ -137,7 +138,8 @@ export interface AppFilters {
 export interface AppState {
   configured: boolean;
   projects: PlaneProject[];
-  selectedProjectId: string | null;
+  selectedProjectId: string | null;  // null = all-projects view
+  issueCounts: Record<string, number>; // open issue count per project UUID
   states: PlaneState[];
   members: PlaneMember[];
   labels: PlaneLabel[];
