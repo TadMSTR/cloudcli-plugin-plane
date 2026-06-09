@@ -33,10 +33,12 @@ let _ppSession: {
   active: boolean;
   projectId: string | null;
   filters: AppFilters;
+  pageSize: number;
 } = {
   active: false,
   projectId: null,
   filters: { stateGroup: '', priority: '', assignee: '', label: '', cycle: '' },
+  pageSize: 10,
 };
 
 // ── Mount / Unmount ────────────────────────────────────────────────────
@@ -66,6 +68,9 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
   let wsInstance: WebSocket | null = null;
   let unsubCtx: (() => void) | null = null;
   let isRefreshing = false;
+  let currentPage = 1;
+  let pageSize = _ppSession.pageSize;
+  let fromLanding = false; // track when detail was opened from landing view
 
   // ── Retry helper ───────────────────────────────────────────────────
   // On failure, waits 1.5 s and tries once more; shows ↻ during the wait.
@@ -87,6 +92,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     _ppSession.active = true;
     _ppSession.projectId = state.selectedProjectId;
     _ppSession.filters = { ...state.filters };
+    _ppSession.pageSize = pageSize;
   }
 
   function restoreSession(): void {
@@ -221,6 +227,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     state.search = '';
     state.view = 'list';
     state.selectedIssue = null;
+    currentPage = 1;
+    fromLanding = false;
     state.loading = true;
     render(api.context);
     try {
@@ -243,6 +251,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
   async function applyFilter(key: keyof AppFilters, value: string): Promise<void> {
     state.filters[key] = value;
+    currentPage = 1;
     saveSession();
     state.loading = true;
     render(api.context);
@@ -265,6 +274,53 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       state.error = (err as Error).message;
     }
     state.loading = false;
+    render(api.context);
+  }
+
+  // Open detail from the landing view: load the issue's project meta first,
+  // then show detail. Back button will return to landing.
+  async function openDetailFromLanding(issueId: string, projectId: string): Promise<void> {
+    fromLanding = true;
+    state.selectedProjectId = projectId;
+    state.view = 'detail';
+    state.loading = true;
+    render(api.context);
+    try {
+      await loadProjectMeta(projectId);
+      await loadDetail(issueId);
+      saveSession();
+    } catch (err) {
+      state.error = (err as Error).message;
+    }
+    state.loading = false;
+    render(api.context);
+  }
+
+  // Smart back: if detail was opened from landing, return there.
+  // Otherwise return to the current project's issue list.
+  async function goBack(): Promise<void> {
+    state.selectedIssue = null;
+    if (fromLanding) {
+      fromLanding = false;
+      state.selectedProjectId = null;
+      state.states  = [];
+      state.members = [];
+      state.labels  = [];
+      state.cycles  = [];
+      state.view = 'list';
+      currentPage = 1;
+      _ppSession.projectId = null;
+      state.loading = true;
+      render(api.context);
+      try {
+        await withRetry(() => loadIssues());
+      } catch (err) {
+        state.error = (err as Error).message;
+      }
+      state.loading = false;
+    } else {
+      state.view = 'list';
+    }
     render(api.context);
   }
 
@@ -460,9 +516,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
           return `<select class="pp-state-sel" data-id="${issue.id}" style="${stateSelectStyle}" onclick="event.stopPropagation()">${stateOpts}</select>`;
         })();
 
-    const rowInteractive = !isAllProjects;
     return `<div class="pp-up" style="animation-delay:${idx * 0.03}s">
-      <div class="pp-issue-row" data-id="${issue.id}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:${rowInteractive ? 'pointer' : 'default'}" ${rowInteractive ? `onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'"` : ''}>
+      <div class="pp-issue-row" data-id="${issue.id}" data-project="${escHtml(issue.project ?? '')}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='transparent'">
         <span style="font-size:0.65rem;color:${pColor};flex-shrink:0;width:20px;text-align:center">${pIcon}</span>
         <div style="width:6px;height:6px;border-radius:50%;background:${dot};flex-shrink:0"></div>
         <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0;min-width:60px">${escHtml(identifier)}</span>
@@ -474,15 +529,41 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     </div>`;
   }
 
-  function buildIssueList(c: ReturnType<typeof themeColors>): string {
-    const issues = filteredIssues();
-    if (issues.length === 0) {
+  function buildIssueList(c: ReturnType<typeof themeColors>, filtered: PlaneIssue[]): string {
+    if (filtered.length === 0) {
       return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:40%;gap:14px">
         <pre style="font-size:0.75rem;color:${c.muted};opacity:0.5;line-height:1.6;text-align:center">  ·  ·  ·\n</pre>
         <div style="font-size:0.72rem;color:${c.muted};letter-spacing:0.1em;text-transform:uppercase">no issues</div>
       </div>`;
     }
-    return issues.map((issue, i) => buildIssueRow(issue, c, i)).join('');
+    const start = (currentPage - 1) * pageSize;
+    const page = pageSize > 0 ? filtered.slice(start, start + pageSize) : filtered;
+    return page.map((issue, i) => buildIssueRow(issue, c, i)).join('');
+  }
+
+  function buildPagination(c: ReturnType<typeof themeColors>, total: number): string {
+    const totalPages = pageSize > 0 ? Math.ceil(total / pageSize) : 1;
+    if (total === 0) return '';
+
+    const btnStyle = (disabled: boolean) =>
+      `background:transparent;border:1px solid ${disabled ? c.surface : c.border};color:${disabled ? c.surface : c.muted};border-radius:3px;padding:2px 8px;font-family:${MONO};font-size:0.65rem;cursor:${disabled ? 'default' : 'pointer'}`;
+    const selStyle = `background:${c.surface};color:${c.muted};border:1px solid ${c.border};border-radius:3px;padding:2px 5px;font-family:${MONO};font-size:0.62rem;outline:none;cursor:pointer`;
+
+    const pageSizeOpts = [10, 25, 50, 100, 0].map(n =>
+      `<option value="${n}" ${pageSize === n ? 'selected' : ''}>${n === 0 ? 'all' : n}</option>`
+    ).join('');
+
+    const pageInfo = totalPages > 1
+      ? `<button id="pp-page-prev" ${currentPage <= 1 ? 'disabled' : ''} style="${btnStyle(currentPage <= 1)}">‹</button>
+         <span style="font-size:0.62rem;color:${c.muted}">${currentPage} / ${totalPages}</span>
+         <button id="pp-page-next" ${currentPage >= totalPages ? 'disabled' : ''} style="${btnStyle(currentPage >= totalPages)}">›</button>`
+      : '';
+
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px 0;flex-wrap:wrap">
+      ${pageInfo}
+      <span style="font-size:0.55rem;color:${c.muted};margin-left:auto">${total} item${total !== 1 ? 's' : ''}</span>
+      <select id="pp-page-size" style="${selStyle}" title="items per page">${pageSizeOpts}</select>
+    </div>`;
   }
 
   function buildDetail(c: ReturnType<typeof themeColors>): string {
@@ -641,7 +722,8 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     } else if (state.view === 'detail') {
       content = `${buildHeader(c, dark)}${buildDetail(c)}`;
     } else {
-      content = `${buildHeader(c, dark)}${buildFilters(c)}<div id="pp-issue-list">${buildIssueList(c)}</div>`;
+      const filtered = filteredIssues();
+      content = `${buildHeader(c, dark)}${buildFilters(c)}<div id="pp-issue-list">${buildIssueList(c, filtered)}</div>${buildPagination(c, filtered.length)}`;
     }
 
     root.innerHTML = content;
@@ -659,13 +741,13 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       });
     }
 
-    // Search
+    // Search — reset page on new query
     const searchInput = root.querySelector<HTMLInputElement>('#pp-search');
     if (searchInput) {
       searchInput.addEventListener('input', () => {
         state.search = searchInput.value;
-        const list = root.querySelector<HTMLElement>('#pp-issue-list');
-        if (list) list.innerHTML = buildIssueList(c);
+        currentPage = 1;
+        render(api.context);
       });
     }
 
@@ -675,11 +757,9 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       render(api.context);
     });
 
-    // Back button
+    // Back button — returns to landing if that's where we came from
     root.querySelector('#pp-btn-back')?.addEventListener('click', () => {
-      state.view = 'list';
-      state.selectedIssue = null;
-      render(api.context);
+      void goBack();
     });
 
     // Filter selects
@@ -696,13 +776,34 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       });
     }
 
-    // Issue row clicks (only active when a project is selected)
+    // Issue row clicks — landing uses openDetailFromLanding; project uses openDetail
     root.querySelectorAll<HTMLElement>('.pp-issue-row').forEach(row => {
       row.addEventListener('click', () => {
-        if (!state.selectedProjectId) return;
         const id = row.dataset['id'];
-        if (id) void openDetail(id);
+        if (!id) return;
+        if (!state.selectedProjectId) {
+          const proj = row.dataset['project'];
+          if (proj) void openDetailFromLanding(id, proj);
+        } else {
+          void openDetail(id);
+        }
       });
+    });
+
+    // Pagination controls
+    root.querySelector('#pp-page-prev')?.addEventListener('click', () => {
+      if (currentPage > 1) { currentPage--; render(api.context); }
+    });
+    root.querySelector('#pp-page-next')?.addEventListener('click', () => {
+      const total = filteredIssues().length;
+      const totalPages = pageSize > 0 ? Math.ceil(total / pageSize) : 1;
+      if (currentPage < totalPages) { currentPage++; render(api.context); }
+    });
+    root.querySelector<HTMLSelectElement>('#pp-page-size')?.addEventListener('change', (e) => {
+      pageSize = parseInt((e.target as HTMLSelectElement).value, 10);
+      currentPage = 1;
+      saveSession();
+      render(api.context);
     });
 
     // Inline state selects on issue rows
