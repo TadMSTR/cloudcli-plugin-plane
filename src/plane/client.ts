@@ -29,7 +29,7 @@ export class PlaneClient {
     const url = `${this.baseUrl}/api/v1${path}`;
     const res = await fetch(url, {
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        'X-Api-Key': this.apiKey,
         'Content-Type': 'application/json',
       },
     });
@@ -44,7 +44,7 @@ export class PlaneClient {
     const res = await fetch(url, {
       method: 'PATCH',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        'X-Api-Key': this.apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -60,7 +60,7 @@ export class PlaneClient {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        'X-Api-Key': this.apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
