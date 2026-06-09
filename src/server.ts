@@ -376,8 +376,8 @@ async function handleCommentCreate(
   if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
 
   const body = await parseBody(req);
-  const commentHtml = body.comment_html as string;
-  if (!commentHtml) { json(res, 400, { error: 'comment_html required' }); return; }
+  const commentHtml = body.comment_html;
+  if (!commentHtml || typeof commentHtml !== 'string') { json(res, 400, { error: 'comment_html required' }); return; }
 
   const client = new PlaneClient(cfg);
   const comment = await client.createComment(projectId, issueId, commentHtml);

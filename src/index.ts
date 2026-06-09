@@ -790,7 +790,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     }
 
     return `<div class="pp-up" style="animation-delay:${idx * 0.03}s">
-      <div class="pp-issue-row" data-id="${issue.id}" data-project="${escHtml(issue.project ?? '')}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};${hlBorder}background:${hlBg};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='${hlBg}'"">
+      <div class="pp-issue-row" data-id="${issue.id}" data-project="${escHtml(issue.project ?? '')}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid ${c.border};${hlBorder}background:${hlBg};cursor:pointer" onmouseover="this.style.background='${c.dim}'" onmouseout="this.style.background='${hlBg}'"
         <span style="font-size:0.65rem;color:${pColor};flex-shrink:0;width:20px;text-align:center">${pIcon}</span>
         <div style="width:6px;height:6px;border-radius:50%;background:${dot};flex-shrink:0"></div>
         <span style="font-size:0.6rem;color:${c.muted};flex-shrink:0;min-width:60px">${escHtml(identifier)}</span>
