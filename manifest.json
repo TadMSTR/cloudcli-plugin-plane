@@ -1,0 +1,11 @@
+{
+  "name": "cloudcli-plugin-plane",
+  "displayName": "Plane",
+  "version": "0.1.0",
+  "description": "Plane project management for CloudCLI",
+  "type": "module",
+  "slot": "tab",
+  "entry": "dist/index.js",
+  "server": "dist/server.js",
+  "permissions": []
+}
