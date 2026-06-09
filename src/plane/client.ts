@@ -75,6 +75,12 @@ export class PlaneClient {
     return `/workspaces/${this.workspaceSlug}`;
   }
 
+  // ── User ──────────────────────────────────────────────────────────────
+
+  async getMe(): Promise<{ id: string; display_name: string }> {
+    return this.get<{ id: string; display_name: string }>('/users/me/');
+  }
+
   // ── Projects ──────────────────────────────────────────────────────────
 
   async listProjects(): Promise<PlaneProject[]> {
@@ -150,6 +156,13 @@ export class PlaneClient {
       `${this.ws()}/projects/${projectId}/issues/${issueId}/comments/`
     );
     return Array.isArray(data) ? data : (data.results ?? []);
+  }
+
+  async createComment(projectId: string, issueId: string, commentHtml: string): Promise<PlaneComment> {
+    return this.post<PlaneComment>(
+      `${this.ws()}/projects/${projectId}/issues/${issueId}/comments/`,
+      { comment_html: commentHtml }
+    );
   }
 
   async updateIssue(

@@ -25,7 +25,7 @@ const CONFIG_PATH = path.join(
   'cloudcli-plugin-plane',
   'config.json'
 );
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 // ── Config loading ─────────────────────────────────────────────────────
 
@@ -155,6 +155,20 @@ async function handleHealth(res: http.ServerResponse): Promise<void> {
     planeUrl: cfg.planeUrl,
     workspaceSlug: cfg.workspaceSlug,
   });
+}
+
+async function handleMe(res: http.ServerResponse): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
+
+  const cacheKey = 'me';
+  let me = cache.get<{ id: string; display_name: string }>(cacheKey);
+  if (!me) {
+    const client = new PlaneClient(cfg);
+    me = await client.getMe();
+    cache.set(cacheKey, me, TTL_META);
+  }
+  json(res, 200, me);
 }
 
 async function handleProjects(res: http.ServerResponse): Promise<void> {
@@ -352,6 +366,25 @@ async function handleIssueDetail(
   json(res, 200, { issue, comments });
 }
 
+async function handleCommentCreate(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  projectId: string,
+  issueId: string
+): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg) { json(res, 503, { error: 'not configured' }); return; }
+
+  const body = await parseBody(req);
+  const commentHtml = body.comment_html as string;
+  if (!commentHtml) { json(res, 400, { error: 'comment_html required' }); return; }
+
+  const client = new PlaneClient(cfg);
+  const comment = await client.createComment(projectId, issueId, commentHtml);
+  broadcast({ type: 'refresh' });
+  json(res, 201, { comment });
+}
+
 async function handleIssueUpdate(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -403,6 +436,7 @@ async function handleIssueCreate(
 // ── Router ─────────────────────────────────────────────────────────────
 
 const ISSUE_DETAIL_RE = /^\/issues\/([^/?]+)$/;
+const ISSUE_COMMENTS_RE = /^\/issues\/([^/?]+)\/comments$/;
 const VALID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function router(
@@ -424,6 +458,8 @@ async function router(
   try {
     if (pathname === '/health' && method === 'GET') {
       await handleHealth(res);
+    } else if (pathname === '/me' && method === 'GET') {
+      await handleMe(res);
     } else if (pathname === '/projects' && method === 'GET') {
       await handleProjects(res);
     } else if (pathname === '/states' && method === 'GET') {
@@ -445,6 +481,17 @@ async function router(
     } else if (pathname === '/issues' && method === 'POST') {
       await handleIssueCreate(req, res);
     } else {
+      const mc = ISSUE_COMMENTS_RE.exec(pathname);
+      if (mc && method === 'POST') {
+        const issueId = mc[1];
+        const projectId = params.get('project');
+        if (!projectId) { json(res, 400, { error: 'project required' }); return; }
+        if (!VALID_UUID.test(issueId) || !VALID_UUID.test(projectId)) {
+          json(res, 400, { error: 'invalid id' }); return;
+        }
+        await handleCommentCreate(req, res, projectId, issueId);
+        return;
+      }
       const m = ISSUE_DETAIL_RE.exec(pathname);
       if (m) {
         const issueId = m[1];
