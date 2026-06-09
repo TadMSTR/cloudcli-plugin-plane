@@ -26,6 +26,19 @@ import {
   escHtml,
 } from './styles.js';
 
+// ── Session state (module-level) ───────────────────────────────────────
+// Persists across mount/unmount within the same browser context (tab switches).
+// Cleared on CloudCLI restart. Fresh start → landing view. Tab switch → restore.
+let _ppSession: {
+  active: boolean;
+  projectId: string | null;
+  filters: AppFilters;
+} = {
+  active: false,
+  projectId: null,
+  filters: { stateGroup: '', priority: '', assignee: '', label: '', cycle: '' },
+};
+
 // ── Mount / Unmount ────────────────────────────────────────────────────
 
 export function mount(container: HTMLElement, api: PluginAPI): void {
@@ -35,7 +48,6 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     configured: false,
     projects: [],
     selectedProjectId: null,
-    issueCounts: {},
     states: [],
     members: [],
     labels: [],
@@ -70,29 +82,20 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     }
   }
 
-  // ── Tab state persistence (localStorage) ──────────────────────────
-  const STORAGE_KEY = 'pp-saved';
-
-  function saveTabState(): void {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        selectedProjectId: state.selectedProjectId,
-        filters: state.filters,
-      }));
-    } catch { /* storage unavailable */ }
+  // ── Session state helpers ──────────────────────────────────────────
+  function saveSession(): void {
+    _ppSession.active = true;
+    _ppSession.projectId = state.selectedProjectId;
+    _ppSession.filters = { ...state.filters };
   }
 
-  function restoreTabState(): void {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const saved = JSON.parse(raw) as { selectedProjectId?: string | null; filters?: AppFilters };
-      // Validate saved project still exists before restoring
-      if (saved.selectedProjectId && state.projects.some(p => p.id === saved.selectedProjectId)) {
-        state.selectedProjectId = saved.selectedProjectId;
-      }
-      if (saved.filters) state.filters = { ...state.filters, ...saved.filters };
-    } catch { /* ignore parse errors */ }
+  function restoreSession(): void {
+    // Validate saved project still exists
+    const valid = _ppSession.projectId
+      ? state.projects.some(p => p.id === _ppSession.projectId)
+      : true;
+    state.selectedProjectId = valid ? _ppSession.projectId : null;
+    state.filters = { ..._ppSession.filters };
   }
 
   const root = document.createElement('div');
@@ -117,16 +120,14 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       }
       const res = await api.rpc('GET', 'projects') as { projects: PlaneProject[] };
       state.projects = res.projects ?? [];
-      // Fetch open issue counts (best-effort; failures don't block the view)
-      try {
-        const countsRes = await api.rpc('GET', 'issue-counts') as { counts: Record<string, number> };
-        state.issueCounts = countsRes.counts ?? {};
-      } catch { /* counts unavailable — carry on without badges */ }
-      // Restore last-used project and filters from localStorage
-      restoreTabState();
-      if (state.selectedProjectId) {
-        await loadProjectMeta(state.selectedProjectId);
+      if (_ppSession.active) {
+        // Tab switch within same session — restore where the user was
+        restoreSession();
+        if (state.selectedProjectId) {
+          await loadProjectMeta(state.selectedProjectId);
+        }
       }
+      // else: fresh start — selectedProjectId stays null, shows recent items
       await withRetry(() => loadIssues());
     } catch (err) {
       state.error = (err as Error).message;
@@ -235,14 +236,14 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     } catch (err) {
       state.error = (err as Error).message;
     }
-    saveTabState();
+    saveSession();
     state.loading = false;
     render(api.context);
   }
 
   async function applyFilter(key: keyof AppFilters, value: string): Promise<void> {
     state.filters[key] = value;
-    saveTabState();
+    saveSession();
     state.loading = true;
     render(api.context);
     try {
@@ -357,15 +358,12 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       : null;
 
     const projectOptions = [
-      // Placeholder shown only when no project selected (first visit, before localStorage kicks in)
       !state.selectedProjectId
         ? `<option value="" disabled selected>— select a project —</option>`
         : '',
-      ...state.projects.map(p => {
-        const cnt = state.issueCounts[p.id] ?? 0;
-        const badge = cnt > 0 ? ` (${cnt})` : '';
-        return `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${escHtml(p.identifier)} — ${escHtml(p.name)}${badge}</option>`;
-      }),
+      ...state.projects.map(p =>
+        `<option value="${p.id}" ${p.id === state.selectedProjectId ? 'selected' : ''}>${escHtml(p.identifier)} — ${escHtml(p.name)}</option>`
+      ),
     ].join('');
 
     const selectStyle = `background:${c.surface};color:${c.text};border:1px solid ${c.border};border-radius:4px;padding:4px 8px;font-family:${MONO};font-size:0.72rem;outline:none;cursor:pointer`;

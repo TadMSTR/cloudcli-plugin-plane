@@ -139,8 +139,7 @@ export interface AppFilters {
 export interface AppState {
   configured: boolean;
   projects: PlaneProject[];
-  selectedProjectId: string | null;  // null = all-projects view
-  issueCounts: Record<string, number>; // open issue count per project UUID
+  selectedProjectId: string | null;  // null = landing/recent view
   states: PlaneState[];
   members: PlaneMember[];
   labels: PlaneLabel[];
