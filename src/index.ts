@@ -53,6 +53,22 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
 
   let wsInstance: WebSocket | null = null;
   let unsubCtx: (() => void) | null = null;
+  let isRefreshing = false;
+
+  // ── Retry helper ───────────────────────────────────────────────────
+  // On failure, waits 1.5 s and tries once more; shows ↻ during the wait.
+  // If the retry also fails, re-throws so the caller can set state.error.
+  async function withRetry(fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (firstErr) {
+      isRefreshing = true;
+      render(api.context);
+      await new Promise(r => setTimeout(r, 1500));
+      isRefreshing = false;
+      await fn(); // throws if still failing — caller handles it
+    }
+  }
 
   // ── Tab state persistence (localStorage) ──────────────────────────
   const STORAGE_KEY = 'pp-saved';
@@ -111,7 +127,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       if (state.selectedProjectId) {
         await loadProjectMeta(state.selectedProjectId);
       }
-      await loadIssues();
+      await withRetry(() => loadIssues());
     } catch (err) {
       state.error = (err as Error).message;
     }
@@ -187,7 +203,9 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         try {
           const msg = JSON.parse(e.data as string) as { type: string };
           if (msg.type === 'refresh') {
-            void loadIssues().then(() => render(api.context));
+            void withRetry(() => loadIssues())
+              .then(() => render(api.context))
+              .catch(() => render(api.context)); // silent on persistent failure
           }
         } catch { /* ignore */ }
       };
@@ -213,7 +231,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
         state.labels  = [];
         state.cycles  = [];
       }
-      await loadIssues();
+      await withRetry(() => loadIssues());
     } catch (err) {
       state.error = (err as Error).message;
     }
@@ -228,7 +246,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
     state.loading = true;
     render(api.context);
     try {
-      await loadIssues();
+      await withRetry(() => loadIssues());
     } catch (err) {
       state.error = (err as Error).message;
     }
@@ -352,7 +370,7 @@ export function mount(container: HTMLElement, api: PluginAPI): void {
       <input id="pp-search" type="text" placeholder="search..." value="${state.search.replace(/"/g, '&quot;')}" style="${inputStyle}">
       <button id="pp-btn-new" style="${btnStyle}" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">+ new issue</button>
       ${state.view !== 'list' ? `<button id="pp-btn-back" style="${btnStyle}" onmouseover="this.style.borderColor='${c.accent}';this.style.color='${c.accent}'" onmouseout="this.style.borderColor='${c.border}';this.style.color='${c.muted}'">← back</button>` : ''}
-      <span style="font-size:0.55rem;color:${state.wsConnected ? c.ok : c.muted};margin-left:auto">${state.wsConnected ? '● live' : '○ offline'}</span>
+      <span style="font-size:0.55rem;color:${isRefreshing ? c.warn : state.wsConnected ? c.ok : c.muted};margin-left:auto">${isRefreshing ? '↻ loading' : state.wsConnected ? '● live' : '○ offline'}</span>
     </div>`;
   }
 
